@@ -3,7 +3,7 @@ from typing import List
 
 import numpy as np
 
-from component import Component
+from dynamic_fea.component import Component
 
 
 class DesignRepresentation:

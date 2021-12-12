@@ -1,8 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import shapely
-from element import Element, QuadElement
-from material import IsotropicMaterial
+from dynamic_fea.element import Element, QuadElement
+from dynamic_fea.material import IsotropicMaterial
 from shapely.geometry import Polygon
 
 # calling this class UnstructuredMesh for lack of a better term

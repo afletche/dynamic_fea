@@ -128,8 +128,7 @@ class FEA:
                     self.F[load_component_dof] = self.F[load_component_dof].data + force[i]
                 else:
                     self.F[load_component_dof] = force[i]
-        self.F = self.F.tocsc()
-        
+        self.F = self.F.tocsc()        
 
 
     '''
@@ -246,10 +245,12 @@ class FEA:
         # self.U = np.linalg.solve(self.K[np.ix_(self.free_dof, self.free_dof)], self.F[self.free_dof])
 
         a = self.K_ff
+        print(a)
         b = self.F_f - self.K_fp.dot(self.U_p)
         # b = self.F_f - np.dot(self.K_fp, self.U_p)
         # self.U_f = np.linalg.solve(a, b)
         self.U_f = spsolve(a, b)
+        print('line252, U: ', self.U_f)
         # self.F_p = np.dot(self.K_pf, self.U_f) + np.dot(self.K_pp, self.U_p)
         self.F_p = self.K_pf.dot(self.U_f).reshape((self.K_pf.shape[0], 1)) + self.K_pp.dot(self.U_p)
 
@@ -280,16 +281,16 @@ class FEA:
         if len(nodes.shape) == 2:
             plt.plot(nodes[:,0], nodes[:,1], 'ko')
             plt.plot(deformed_nodes[:,0], deformed_nodes[:,1], 'r*')
-            for i in range(self.num_nodes):
-                connections_indices = self.mesh.connections[i]
-                j = 0
-                for index in connections_indices:
-                    this_node = nodes[i]
-                    other_node = nodes[index]
-                    plt.plot([this_node[0], other_node[0]], [this_node[1], other_node[1]], '--k')
-                    this_deformed_node = deformed_nodes[i]  # I don't understand why the deformed come out as 2d arrays
-                    other_deformed_node = deformed_nodes[index].reshape(deformed_nodes.shape[1])
-                    plt.plot([this_deformed_node[0, 0], other_deformed_node[0, 0]] , [this_deformed_node[0, 1], other_deformed_node[0, 1]], '--r')
+            # for i in range(self.num_nodes):
+            #     connections_indices = self.mesh.connections[i]
+            #     j = 0
+            #     for index in connections_indices:
+            #         this_node = nodes[i]
+            #         other_node = nodes[index]
+            #         plt.plot([this_node[0], other_node[0]], [this_node[1], other_node[1]], '--k')
+            #         this_deformed_node = deformed_nodes[i]  # I don't understand why the deformed come out as 2d arrays
+            #         other_deformed_node = deformed_nodes[index].reshape(deformed_nodes.shape[1])
+            #         plt.plot([this_deformed_node[0, 0], other_deformed_node[0, 0]] , [this_deformed_node[0, 1], other_deformed_node[0, 1]], '--r')
 
             plt.title(f'Scaled Discplacements (x{visualization_scaling_factor}) with {self.num_elements} Elements')
             plt.xlabel('x1 (m)')
@@ -334,7 +335,7 @@ class FEA:
                 integration_point = element.integration_coordinates[i,:]
                 integration_points = np.vstack((integration_points, integration_point))
                 stress_values = np.vstack((stress_values, element.stresses[i, :]))
-        plt.scatter(integration_points[:,0], integration_points[:,1], c=stress_values[:,index])
+        plt.scatter(integration_points[1:,0], integration_points[1:,1], c=stress_values[1:,index])
 
         plt.title(f'Stress (sigma_{stress_type}) Color Plot with {self.num_elements} Elements')
         plt.xlabel('x1 (m)')

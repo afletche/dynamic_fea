@@ -73,15 +73,6 @@ def create_bridge_mesh(geo, nodes_per_length_queries):
 
 
         '''Create chord surface using linear interpolation of lead/trail curves'''
-        # num_pts1 = [100]
-        # num_pts2 = [20]
-        # num_pts5 = [20]
-        # num_pts6 = [20]
-
-        # num_pts3 = num_pts5
-        # num_pts4 = num_pts6
-
-
         surface_shape1 = np.append(num_pts1,num_pts2)
         top_edge_curve1 = geo.perform_linear_interpolation(top_left1_ptset, top_right1_ptset, num_pts1)
         bot_edge_curve1 = geo.perform_linear_interpolation(bot_left1_ptset, bot_right1_ptset, num_pts1)

@@ -2,19 +2,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-from fea import FEA
-from material import IsotropicMaterial
-from component import Component
-from element import Element, QuadElement
+from dynamic_fea.fea import FEA
+from dynamic_fea.material import IsotropicMaterial
+from dynamic_fea.component import Component
+from dynamic_fea.element import Element, QuadElement
 # from mesh import UnstructuredMesh
-from unstructured_matrix import UnstructuredMesh
-from design_representation import FERepresentation
+from dynamic_fea.examples.bridge_example.unstructured_matrix import UnstructuredMesh
+from dynamic_fea.design_representation import FERepresentation
 
 
 from lsdo_geo.core.geometry import Geometry
 from lsdo_geo.core.mesh import Mesh
 
-from create_bridge_mesh import create_bridge_mesh
+from examples.bridge_example.create_bridge_mesh import create_bridge_mesh
 from vedo import Points, Plotter, LegendBox
 
 

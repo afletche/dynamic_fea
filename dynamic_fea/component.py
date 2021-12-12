@@ -1,4 +1,4 @@
-from material import Material
+from dynamic_fea.material import Material
 import numpy as np
 
 
