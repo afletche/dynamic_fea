@@ -7,6 +7,7 @@ This class is for performing 2D structural FEA problems.
 
 from os import name
 import numpy as np
+from numpy.core.fromnumeric import size
 import scipy.sparse as sps
 from scipy.sparse.linalg import spsolve
 import matplotlib.pyplot as plt
@@ -128,7 +129,6 @@ class FEA:
                     self.F[load_component_dof] = self.F[load_component_dof].data + force[i]
                 else:
                     self.F[load_component_dof] = force[i]
-        self.F = self.F.tocsc()        
 
 
     '''
@@ -194,7 +194,6 @@ class FEA:
             local_K = element.calc_k_local()
             element_dofs = self.nodes_to_dof_indices(element.node_map)
             self.K[np.ix_(element_dofs, element_dofs)] += local_K
-        self.K = self.K.tocsc()
 
     '''
     Gets the DOF indices for the corresponding nodes.
@@ -223,6 +222,8 @@ class FEA:
     '''
     def setup(self):
         self.assemble_k()
+        self.K = self.K.tocsc()
+        self.F = self.F.tocsc()        
 
         self.free_dof = np.setdiff1d(self.total_dof, self.prescribed_dof)   # all dof that are not prescribed are free
         
@@ -237,6 +238,9 @@ class FEA:
         self.U_f = self.U[self.free_dof]          # don't know yet
         self.U_p = self.U[self.prescribed_dof]
 
+        # self.K = self.K.tocsc()   # TODO figure out when is more efficient
+        # self.F = self.F.tocsc() 
+
 
     '''
     Solves the FEA problem.
@@ -245,12 +249,10 @@ class FEA:
         # self.U = np.linalg.solve(self.K[np.ix_(self.free_dof, self.free_dof)], self.F[self.free_dof])
 
         a = self.K_ff
-        print(a)
         b = self.F_f - self.K_fp.dot(self.U_p)
         # b = self.F_f - np.dot(self.K_fp, self.U_p)
         # self.U_f = np.linalg.solve(a, b)
         self.U_f = spsolve(a, b)
-        print('line252, U: ', self.U_f)
         # self.F_p = np.dot(self.K_pf, self.U_f) + np.dot(self.K_pp, self.U_p)
         self.F_p = self.K_pf.dot(self.U_f).reshape((self.K_pf.shape[0], 1)) + self.K_pp.dot(self.U_p)
 
@@ -260,6 +262,99 @@ class FEA:
 
         # self.F[self.free_dof] = self.F_f          # known already
         self.F[self.prescribed_dof] = self.F_p
+
+    
+    def setup_dynamics(self):
+        self.setup()
+        size_K_ff = self.K_ff.shape[0]
+        mass_per_node = 1
+        M = sps.eye(size_K_ff, format='csc')*mass_per_node
+        inv_M = sps.linalg.inv(M)
+        dampening_per_node = 0.
+        dampening = sps.eye(size_K_ff, format='csc')*dampening_per_node
+        # A_10 = -spsolve(M, self.K_ff)
+        A_10 = -M.dot(self.K_ff)
+        # A_11 = -spsolve(M, dampening)
+        A_11 = -M.dot(dampening)
+        A = sps.lil_matrix((2*size_K_ff, 2*size_K_ff))
+        # A[:size_K_ff, :size_K_ff] = sps.zeros     # not necessary for sparse
+        A[:size_K_ff, size_K_ff:] = sps.eye(size_K_ff, format='csc')
+        A[size_K_ff:, :size_K_ff] = A_10
+        A[size_K_ff:, size_K_ff:] = A_11
+        A = A.tocsc()
+        # print('Eigenvalues of A: ', sps.linalg.eigs(A))
+        self.eigs = sps.linalg.eigs(A)
+
+        B = sps.lil_matrix((2*size_K_ff, size_K_ff))
+        # B[size_K_ff:,:] = spsolve(M, sps.eye(size_K_ff))
+        B[size_K_ff:,:] = inv_M
+        B = B.tocsc()
+
+        C = sps.lil_matrix((size_K_ff, 2*size_K_ff))
+        C[:, :size_K_ff] = sps.eye(size_K_ff)
+        C = C.tocsc()
+
+        self.A = A
+        self.B = B
+        self.C = C
+
+
+    def evaluate_dynamics(self, t0, tf, nt=None, x0=None):
+        if nt is None:
+            nt = int((tf-t0)*100)
+        if x0 is None:
+            x0 = np.zeros((2*self.K_ff.shape[0],1))
+        x = x0
+
+        self.x = x
+        tao = np.linspace(t0, tf, nt)
+        z = np.zeros_like(self.F_f.todense())
+        
+        # print(self.F_f.todense()[:,0])
+        # print(z[:,0])
+        # print(self.F_f.todense().shape)
+        # print(z.shape)
+        # u = np.linspace(z[:,0], self.F_f.todense()[:,0], nt)
+        u = np.zeros_like(self.F_f.todense())
+        u = sps.csc_matrix(u)
+
+        for i in range(len(tao)-1):
+        # for i in range(len(tao)):
+            if i%100 == 0:
+                print(i)
+            x = self.evaluate_time_interval(tao[i], tao[i+1], x, u)
+            # x = self.evaluate_time_interval(tao[i], tf, x)
+            self.x = np.hstack((self.x, x))
+            # self.x += x
+
+        self.U = np.zeros((self.num_total_dof, nt))
+        # self.U = np.zeros((self.num_total_dof, 1))
+        self.U[self.free_dof,:] = self.C.dot(self.x)
+        # self.U = self.C.dot(self.x)
+
+        
+
+    def evaluate_time_interval(self, t0, t1, x0, u):
+        t = t1
+        # gauss_quadrature_tao = (t1-t0)/2
+        t_minus_tao = t-t0
+        e_At = sps.linalg.expm(self.A*t_minus_tao)  # Warning! This becomes really expensive when scaled!!
+        # x = e_At.dot(x0) + e_At.dot(self.B.dot(self.F_f*(t1-t0)))
+        # # x = e_At.dot(self.B.dot(self.F_f*(t1-t0)))
+        carried_x0 = e_At.dot(x0)
+
+        taos = np.linspace(t0, t1, 2)
+        dtao = (t1-t0)/1
+        integrand = np.zeros_like(x0)
+        for i in range(len(taos)-1):
+            gauss_quadrature_tao = (taos[i+1]-taos[i])/2
+            t_minus_tao = t-t0
+            e_At = sps.linalg.expm(self.A*t_minus_tao)
+            integrand += e_At.dot(self.B.dot(self.F_f*(dtao)))
+
+        x = carried_x0 + integrand
+        return x
+
 
 
     '''
