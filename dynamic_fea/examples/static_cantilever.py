@@ -10,8 +10,8 @@ from dynamic_fea.mesh import UnstructuredMesh
 from dynamic_fea.design_representation import FERepresentation
 
 
-from lsdo_geo.core.geometry import Geometry
-from lsdo_geo.core.mesh import Mesh
+from lsdo_design.design_geometry.python.core.geometry import Geometry
+from lsdo_design.design_geometry.python.core.mesh import Mesh
 
 from vedo import Points, Plotter, LegendBox
 
@@ -26,7 +26,7 @@ thickness = 1
 
 
 ''' Inputs '''
-NODES_PER_LENGTH = 10
+NODES_PER_LENGTH = 0.5
 
 
 down_direction = np.array([0., 0., -1.])
@@ -91,10 +91,10 @@ for u in range(mesh_nodes.shape[0]-1):
 mesh = UnstructuredMesh(name='cantilever_mesh', nodes=cantilever_pointset.physical_coordinates[:,:2] ,elements=elements)
 
 
-bridge_prob_bc = []
+cantilever_prob_bc = []
 for i in range(mesh_nodes.shape[1]):
-    bridge_prob_bc.append((i, 0, 0))
-    bridge_prob_bc.append((i, 1, 0))
+    cantilever_prob_bc.append((i, 0, 0))
+    cantilever_prob_bc.append((i, 1, 0))
 
 
 load_cases = []
@@ -102,14 +102,16 @@ load_cases = []
 # ''' Load case Ex: downward on upper right tip'''
 # upper_right_element = mesh.elements[-1]
 # upper_right_node = upper_right_element.node_map[-1]
-# bridge_prob_loads = [
+# cantilever_prob_loads = [
 #     (upper_right_node, np.array([0., 5.e6]))
 # ]
-# load_cases.append(bridge_prob_loads)
+# load_cases.append(cantilever_prob_loads)
 
 ''' Load case 1: Distributed load on motor mount'''
 x_bounds = np.array([8.99, 10.01])
 y_bounds = np.array([2.49, 2.51])
+# x_bounds = np.array([9.99, 10.01])
+# y_bounds = np.array([-2.51, 2.51])
 mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
 mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
 mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
@@ -120,35 +122,93 @@ mask = np.logical_and(mask_x, mask_y)
 
 load_nodes = mesh.nodes[mask]
 load_node_indices = np.argwhere(mask)
-load = np.array([0., 5.e6])
+load = np.array([0., 1.e8])
+# load = np.array([1.e7, 0.])
 load_per_node = load/load_node_indices.shape[0]
-bridge_prob_loads = []
+cantilever_prob_loads = []
 for node in load_node_indices[:,0]:
-    bridge_prob_loads.append((node, load_per_node))
+    cantilever_prob_loads.append((node, load_per_node))
 
-load_cases.append(bridge_prob_loads)
+load_cases.append(cantilever_prob_loads)
 
 
 ''' Run for each load case'''
 for i, load_case in enumerate(load_cases):
     print(f'------load case {i}-----')
-    bridge_prob = FEA(mesh=mesh, loads=load_case, boundary_conditions=bridge_prob_bc)
-    bridge_prob.setup()
-    bridge_prob.evaluate()
+    cantilever_prob = FEA(mesh=mesh, loads=load_case, boundary_conditions=cantilever_prob_bc)
+    cantilever_prob.setup()
+    cantilever_prob.evaluate()
     print('___Displacements___')
-    U_reshaped = bridge_prob.U.reshape((bridge_prob.num_nodes, -1))
+    U_reshaped = cantilever_prob.U.reshape((cantilever_prob.num_nodes, -1))
     print('max U_x: ', max(abs(U_reshaped[:,0])))
     print('max U_y: ', max(abs(U_reshaped[:,1])))
-    bridge_prob.plot_displacements()
-    bridge_prob.calc_stresses()
-    print('___Stresses___')
-    print('max sigma_xx: ', max(bridge_prob.stresses[:,:,0].reshape((-1,))))
-    print('max sigma_yy: ', max(bridge_prob.stresses[:,:,1].reshape((-1,))))
-    print('max sigma_xy: ', max(bridge_prob.stresses[:,:,2].reshape((-1,))))
-    print('min sigma_xx: ', min(bridge_prob.stresses[:,:,0].reshape((-1,))))
-    print('min sigma_yy: ', min(bridge_prob.stresses[:,:,1].reshape((-1,))))
-    print('min sigma_xy: ', min(bridge_prob.stresses[:,:,2].reshape((-1,))))
-    # bridge_prob.plot_stresses('xx')
-    # bridge_prob.plot_stresses('yy')
-    # bridge_prob.plot_stresses('xy')
+#     cantilever_prob.plot_displacements()
+#     cantilever_prob.calc_stresses()
+#     print('___Stresses___')
+#     print('max sigma_xx: ', max(cantilever_prob.stresses[:,:,0].reshape((-1,))))
+#     print('max sigma_yy: ', max(cantilever_prob.stresses[:,:,1].reshape((-1,))))
+#     print('max sigma_xy: ', max(cantilever_prob.stresses[:,:,2].reshape((-1,))))
+#     print('min sigma_xx: ', min(cantilever_prob.stresses[:,:,0].reshape((-1,))))
+#     print('min sigma_yy: ', min(cantilever_prob.stresses[:,:,1].reshape((-1,))))
+#     print('min sigma_xy: ', min(cantilever_prob.stresses[:,:,2].reshape((-1,))))
+#     cantilever_prob.plot_stresses('xx')
+#     cantilever_prob.plot_stresses('yy')
+#     cantilever_prob.plot_stresses('xy')
 
+# disps = cantilever_prob.U_f
+# velocities = np.zeros_like(disps)
+# steady_sol = np.append(disps, velocities).reshape((-1, 1))
+# print(load_cases)
+# load_cases = []
+# cantilever_prob_loads = [(0, np.array([0., 0.]))]
+# load_cases.append(cantilever_prob_loads)
+
+''' Run dynamics for each load case'''
+for i, load_case in enumerate(load_cases):
+    print(f'------load case {i}-----')
+    cantilever_prob = FEA(mesh=mesh, loads=load_case, boundary_conditions=cantilever_prob_bc)
+    cantilever_prob.setup_dynamics()
+    t0 = 0.
+    tf = 0.002
+    nt = 100
+    cantilever_prob.evaluate_dynamics(t0=t0, tf=tf, nt=nt)# , x0=steady_sol)
+    # print('___Displacements___')
+    U_reshaped = cantilever_prob.U.reshape((cantilever_prob.num_nodes, -1, nt))
+    # print(cantilever_prob.U)
+    # print(cantilever_prob.U.shape)
+    # print('max U_x: ', max(abs(U_reshaped[:,0])))
+    # print('max U_y: ', max(abs(U_reshaped[:,1])))
+    # cantilever_prob.plot_displacements()
+    # cantilever_prob.calc_stresses()
+    # print('___Stresses___')
+    # print('max sigma_xx: ', max(cantilever_prob.stresses[:,:,0].reshape((-1,))))
+    # print('max sigma_yy: ', max(cantilever_prob.stresses[:,:,1].reshape((-1,))))
+    # print('max sigma_xy: ', max(cantilever_prob.stresses[:,:,2].reshape((-1,))))
+    # print('min sigma_xx: ', min(cantilever_prob.stresses[:,:,0].reshape((-1,))))
+    # print('min sigma_yy: ', min(cantilever_prob.stresses[:,:,1].reshape((-1,))))
+    # print('min sigma_xy: ', min(cantilever_prob.stresses[:,:,2].reshape((-1,))))
+    # cantilever_prob.plot_stresses('xx')
+    # cantilever_prob.plot_stresses('yy')
+    # cantilever_prob.plot_stresses('xy')
+
+
+t = np.linspace(t0, tf, nt)
+# plt.plot(t, cantilever_prob.U[-1, :], '-r')
+plt.plot(t, cantilever_prob.U[-3, :], '-b')
+
+plt.show()
+
+plt.plot(mesh.nodes[:,0], mesh.nodes[:,1], 'bo')
+
+U_reshaped = U_reshaped[:,:,-1]
+nodes = mesh.nodes
+max_x_dist = np.linalg.norm(max(nodes[:,0]) - min(nodes[:,0]))
+max_y_dist = np.linalg.norm(max(nodes[:,1]) - min(nodes[:,1]))
+scale_dist = np.linalg.norm(np.array([max_x_dist, max_y_dist]))
+if np.linalg.norm(cantilever_prob.U) != 0:
+    visualization_scaling_factor = scale_dist*0.1/max(np.linalg.norm(U_reshaped, axis=1))
+else:
+    visualization_scaling_factor = 0
+deformed_nodes = nodes + U_reshaped*visualization_scaling_factor
+plt.plot(deformed_nodes[:,0], deformed_nodes[:,1], 'r*')
+plt.show()
