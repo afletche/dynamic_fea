@@ -6,11 +6,17 @@ This class is for performing 2D structural FEA problems.
 '''
 
 from os import name
+from pprint import pprint
+from time import time_ns
 import numpy as np
 from numpy.core.fromnumeric import size
+from numpy.core.numeric import indices
 import scipy.sparse as sps
 from scipy.sparse.linalg import spsolve
 import matplotlib.pyplot as plt
+import time
+
+from ufl import zero
 
 
 class FEA:
@@ -171,19 +177,10 @@ class FEA:
         self.F = sps.lil_matrix((self.num_total_dof, 1))
         self.U = sps.lil_matrix((self.num_total_dof, 1))
 
+        self.stress_map = sps.lil_matrix((self.num_elements*4*3, self.num_total_dof))   # TODO Generalize for 3D non-quads
+        self.integration_coordinates = np.zeros((self.num_elements*4, self.num_dimensions))     # TODO Generalize for 3D non-quads
 
-    # '''
-    # Assembles the global stiffness matrix based on the local stiffness matrices
-    # '''
-    # def assemble_k(self):
-    #     # For each element, add its local stiffness contribution
-    #     for i in range(self.num_elements):
-    #         element_nodes = self.mesh.nodes[self.mesh.element_nodes[i,:],:]
-    #         local_K = self.calc_k_local(element_nodes[:,0], element_nodes[:,1], self.material, self.design_representation.components[0].properties['thickness'])
-    #         element_dofs = self.nodes_to_dof_indices(self.mesh.element_nodes[i,:])
-    #         self.K[np.ix_(element_dofs, element_dofs)] += local_K
 
-    
     '''
     Assembles the global stiffness matrix based on the local stiffness matrices (using element objects)
     '''
@@ -191,7 +188,8 @@ class FEA:
         # For each element, add its local stiffness contribution
         for i in range(self.num_elements):
             element = self.mesh.elements[i]
-            local_K = element.calc_k_local()
+            # local_K = element.calc_k_local()
+            local_K = element.K_local
             element_dofs = self.nodes_to_dof_indices(element.node_map)
             self.K[np.ix_(element_dofs, element_dofs)] += local_K
 
@@ -218,12 +216,36 @@ class FEA:
 
 
     '''
+    Assembles the global stress map for the A matrix.
+    '''
+    def assemble_stress_map(self):
+        # For each element, add its stress map
+        for i in range(self.num_elements):
+            element = self.mesh.elements[i]
+            local_stress_map = element.stress_map
+            element_dofs = self.nodes_to_dof_indices(element.node_map)
+            start_index = i*element.num_integration_points*3    # 3 types of stresses for 2D TODO Generalize!!
+            end_index = (i+1)*element.num_integration_points*3
+            indices = np.arange(start_index, end_index)
+            self.stress_map[np.ix_(indices, element_dofs)] += local_stress_map
+            start_index = i*element.num_integration_points
+            end_index = (i+1)*element.num_integration_points
+            indices = np.arange(start_index, end_index)
+            self.integration_coordinates[np.ix_(indices, np.array([0,1]))] = element.integration_coordinates
+
+
+    '''
     Runs the preliminary setup to solve the problem.
     '''
     def setup(self):
+        for element in self.mesh.elements:
+            element.assemble()
+
         self.assemble_k()
+        self.assemble_stress_map()
         self.K = self.K.tocsc()
-        self.F = self.F.tocsc()        
+        self.F = self.F.tocsc()
+        self.stress_map.tocsc()      
 
         self.free_dof = np.setdiff1d(self.total_dof, self.prescribed_dof)   # all dof that are not prescribed are free
         
@@ -243,7 +265,7 @@ class FEA:
 
 
     '''
-    Solves the FEA problem.
+    Solves the static FEA problem.
     '''
     def evaluate(self):
         # self.U = np.linalg.solve(self.K[np.ix_(self.free_dof, self.free_dof)], self.F[self.free_dof])
@@ -266,37 +288,80 @@ class FEA:
     
     def setup_dynamics(self):
         self.setup()
-        size_K_ff = self.K_ff.shape[0]
+        self.size_K_ff = self.K_ff.shape[0]
         mass_per_node = 1
-        M = sps.eye(size_K_ff, format='csc')*mass_per_node
-        inv_M = sps.linalg.inv(M)
-        dampening_per_node = 0.
-        dampening = sps.eye(size_K_ff, format='csc')*dampening_per_node
+        M = sps.eye(self.size_K_ff, format='csc')*mass_per_node
+        M_inv = sps.linalg.inv(M)
+        self.dampening_per_node = 0.
+        dampening = sps.eye(self.size_K_ff, format='csc')*self.dampening_per_node
         # A_10 = -spsolve(M, self.K_ff)
-        A_10 = -M.dot(self.K_ff)
+        A_10 = -M_inv.dot(self.K_ff)
         # A_11 = -spsolve(M, dampening)
-        A_11 = -M.dot(dampening)
-        A = sps.lil_matrix((2*size_K_ff, 2*size_K_ff))
+        A_11 = -M_inv.dot(dampening)
+        A = sps.lil_matrix((2*self.size_K_ff, 2*self.size_K_ff))
         # A[:size_K_ff, :size_K_ff] = sps.zeros     # not necessary for sparse
-        A[:size_K_ff, size_K_ff:] = sps.eye(size_K_ff, format='csc')
-        A[size_K_ff:, :size_K_ff] = A_10
-        A[size_K_ff:, size_K_ff:] = A_11
+        A[:self.size_K_ff, self.size_K_ff:] = sps.eye(self.size_K_ff, format='csc')
+        A[self.size_K_ff:, :self.size_K_ff] = A_10
+        A[self.size_K_ff:, self.size_K_ff:] = A_11
         A = A.tocsc()
         # print('Eigenvalues of A: ', sps.linalg.eigs(A))
         self.eigs = sps.linalg.eigs(A)
+        self.A_inv = sps.linalg.inv(A)
+        # print('inv A: ', sps.linalg.inv(A))   # made sure not singular.
+        # print('det: ', np.linalg.det(A.todense()))
+        # A_inv = sps.linalg.inv(A)
+        # print('NORM: ', np.linalg.norm((A.dot(A_inv)).todense() - np.eye(A.shape[0])))
 
-        B = sps.lil_matrix((2*size_K_ff, size_K_ff))
+        B = sps.lil_matrix((2*self.size_K_ff, self.size_K_ff))
         # B[size_K_ff:,:] = spsolve(M, sps.eye(size_K_ff))
-        B[size_K_ff:,:] = inv_M
+        B[self.size_K_ff:,:] = M_inv
         B = B.tocsc()
 
-        C = sps.lil_matrix((size_K_ff, 2*size_K_ff))
-        C[:, :size_K_ff] = sps.eye(size_K_ff)
+        C = sps.lil_matrix((self.size_K_ff, 2*self.size_K_ff))
+        C[:, :self.size_K_ff] = sps.eye(self.size_K_ff)
         C = C.tocsc()
 
         self.A = A
         self.B = B
         self.C = C
+
+    '''
+    Evaluates dynamics with no fixed boundaries.
+    '''
+    def setup_dynamics_not_fixed(self):
+        self.setup()
+        size_K = self.K.shape[0]
+        mass_per_node = 1
+        M = sps.eye(size_K, format='csc')*mass_per_node
+        M_inv = sps.linalg.inv(M)
+        self.dampening_per_node = 0.
+        dampening = sps.eye(size_K, format='csc')*self.dampening_per_node
+        A_10 = -M_inv.dot(self.K)
+        A_11 = -M_inv.dot(dampening)
+        A = sps.lil_matrix((2*size_K, 2*size_K))
+        A[:size_K, size_K:] = sps.eye(size_K, format='csc')
+        A[size_K:, :size_K] = A_10
+        A[size_K:, size_K:] = A_11
+        A = A.tocsc()
+        # print('Eigenvalues of A: ', sps.linalg.eigs(A)[0])
+        self.eigs = sps.linalg.eigs(A)[0]  # TODO check if basis is also returned
+        print(A.shape)
+        # print('det: ', np.linalg.det(A.todense()))
+        # A_inv = sps.linalg.inv(A)
+        # print('NORM: ', np.linalg.norm((A.dot(A_inv)).todense() - np.eye(A.shape[0])))
+
+        B = sps.lil_matrix((2*size_K, size_K))
+        B[size_K:,:] = M_inv
+        B = B.tocsc()
+
+        C = sps.lil_matrix((size_K, 2*size_K))
+        C[:, :size_K] = sps.eye(size_K)
+        C = C.tocsc()
+
+        self.A = A
+        self.B = B
+        self.C = C
+
 
 
     def evaluate_dynamics(self, t0, tf, nt=None, x0=None):
@@ -305,9 +370,14 @@ class FEA:
         if x0 is None:
             x0 = np.zeros((2*self.K_ff.shape[0],1))
         x = x0
+        self.t0 = t0
+        self.tf = tf
+        self.nt = nt
 
         self.x = x
-        tao = np.linspace(t0, tf, nt)
+        self.rigid_body_disp = np.zeros((self.num_dimensions,1))
+        tao = np.linspace(t0, tf, nt+1)
+        tao = np.delete(tao, 0)
         z = np.zeros_like(self.F_f.todense())
         
         # print(self.F_f.todense()[:,0])
@@ -318,19 +388,94 @@ class FEA:
         u = np.zeros_like(self.F_f.todense())
         u = sps.csc_matrix(u)
 
-        for i in range(len(tao)-1):
+        identity_mat = sps.eye(self.A.shape[0])
+
+        self.reshaped_Ff = self.F_f.reshape((-1, self.num_dimensions))
+
+        for i in range(len(tao)):
         # for i in range(len(tao)):
-            if i%100 == 0:
+            if i%1 == 0:
                 print(i)
-            x = self.evaluate_time_interval(tao[i], tao[i+1], x, u)
+            # x = self.evaluate_time_interval(tao[i], tao[i+1], x, u)
+            start_exponential_time = time.time()
+            # if self.dampening_per_node == 0:
+            #     diag_vec_01 = np.ones((self.size_K_ff))*(np.exp(1)-1)
+            #     diag_01 = np.diag(diag_vec_01)
+            #     e_At_01 = np.ones((self.size_K_ff, self.size_K_ff))*(tao[i]-t0) + diag_01
+            #     print((self.A[self.size_K_ff:, :self.size_K_ff]*(tao[i]-t0)).todense())
+            #     e_At_10 = sps.linalg.expm(self.A[self.size_K_ff:, :self.size_K_ff]*(tao[i]-t0)).todense()
+            #     zeros_mat = np.ones_like(e_At_01)
+            #     e_At = np.block([[zeros_mat, e_At_01], [e_At_10, zeros_mat]])
+            #     print(tao[i]-t0)
+            #     print('zombie', sps.linalg.expm((self.A*(tao[i]-t0))[self.size_K_ff:, :self.size_K_ff]))
+            #     print('validator', self.A*(tao[i]-t0))
+            #     # print('sps', sps.linalg.expm(self.A*(tao[i]-t0)))
+            # else:
+            e_At = sps.linalg.expm(self.A*(tao[i]-t0))
+            end_exponential_time = time.time()
+            print('time for exponential: ', end_exponential_time - start_exponential_time)
+            x = e_At.dot(x0) + self.A_inv.dot((e_At - identity_mat).dot((self.B.dot(self.F_f)).todense()))
+            # x = self.evaluate_time_interval(tao[i], tf, x)
+            self.x = np.hstack((self.x, x))
+
+            rigid_body_displacement = self.reshaped_Ff.sum(0).T * ((tao[i]-t0)**2)/2
+            self.rigid_body_disp = np.hstack((self.rigid_body_disp, rigid_body_displacement))
+            # self.x += x
+
+        self.U = np.zeros((self.num_total_dof, nt+1))
+        # self.U = np.zeros((self.num_total_dof, 1))
+        self.U[self.free_dof,:] = self.C.dot(self.x)
+        # self.U = self.C.dot(self.x)
+        self.U_per_time_step = self.U.reshape((-1, nt+1))
+        self.U_per_dim_per_time = self.U.reshape((self.num_nodes, -1, nt+1))
+
+
+    def evaluate_dynamics_not_fixed(self, t0, tf, nt=None, x0=None):
+        if nt is None:
+            nt = int((tf-t0)*100)
+        if x0 is None:
+            x0 = np.zeros((2*self.K.shape[0],1))
+        x = x0
+        self.t0 = t0
+        self.tf = tf
+        self.nt = nt
+
+        self.x = x
+        tao = np.linspace(t0, tf, nt-1)
+
+        u = np.zeros_like(self.F_f.todense())
+        u = sps.csc_matrix(u)
+
+        self.A_inv = sps.linalg.inv(self.A)
+        identity_mat = sps.eye(self.A.shape[0])
+
+        for i in range(len(tao)):
+        # for i in range(len(tao)):
+            # if i%100 == 0:
+            print(i)
+            # x = self.evaluate_time_interval_not_fixed(tao[i], tao[i+1], x, u)
+            e_At = sps.linalg.expm(self.A*(tao[i]-t0))
+            x = e_At.dot(x0) + self.A_inv.dot((e_At - identity_mat).dot(self.B.dot(self.F)))
             # x = self.evaluate_time_interval(tao[i], tf, x)
             self.x = np.hstack((self.x, x))
             # self.x += x
 
         self.U = np.zeros((self.num_total_dof, nt))
         # self.U = np.zeros((self.num_total_dof, 1))
-        self.U[self.free_dof,:] = self.C.dot(self.x)
-        # self.U = self.C.dot(self.x)
+        self.U[:,:] = self.C.dot(self.x)    # need to keep slicing to keep self.U as a numpy in order to reshape properly.
+
+        self.U_per_time_step = self.U.reshape((-1, nt))
+        self.U_per_dim_per_time = self.U.reshape((self.num_nodes, -1, nt))
+        self.rigid_body_disp = np.zeros((self.num_dimensions, self.nt))
+        for i in range(self.U_per_dim_per_time.shape[1]):
+            # print(i)
+            # print(np.max(self.U_per_dim_per_time[:,i,:] - self.U_per_dim_per_time[0,i,:]))
+            # print(self.U_per_dim_per_time[0,i,:])
+            # print(self.U_per_dim_per_time[-1,i,:])
+            self.rigid_body_disp[i,:] = self.U_per_dim_per_time[0,i,:]
+            self.U_per_dim_per_time[:,i,:] -= self.U_per_dim_per_time[0,i,:]
+        self.U = self.U_per_dim_per_time.reshape((-1,nt))
+        # print(self.U)
 
         
 
@@ -351,6 +496,27 @@ class FEA:
             t_minus_tao = t-t0
             e_At = sps.linalg.expm(self.A*t_minus_tao)
             integrand += e_At.dot(self.B.dot(self.F_f*(dtao)))
+
+        x = carried_x0 + integrand
+        return x
+
+    def evaluate_time_interval_not_fixed(self, t0, t1, x0, u):
+        t = t1
+        # gauss_quadrature_tao = (t1-t0)/2
+        t_minus_tao = t-t0
+        e_At = sps.linalg.expm(self.A*t_minus_tao)  # Warning! This becomes really expensive when scaled!!
+        # x = e_At.dot(x0) + e_At.dot(self.B.dot(self.F_f*(t1-t0)))
+        # # x = e_At.dot(self.B.dot(self.F_f*(t1-t0)))
+        carried_x0 = e_At.dot(x0)
+
+        taos = np.linspace(t0, t1, 2)
+        dtao = (t1-t0)/1
+        integrand = np.zeros_like(x0)
+        for i in range(len(taos)-1):
+            gauss_quadrature_tao = (taos[i+1]-taos[i])/2
+            t_minus_tao = t-t0
+            e_At = sps.linalg.expm(self.A*t_minus_tao)
+            integrand += e_At.dot(self.B.dot(self.F*(dtao)))
 
         x = carried_x0 + integrand
         return x
@@ -400,43 +566,74 @@ class FEA:
     Calculates the stresses at the integration points.
     '''
     def calc_stresses(self):
-        num_int_points = 4   # TODO generalize for non-4-node quads!!
-        num_stresses = 3     # TODO generalize for non-2D!!
-        stresses = np.zeros((self.num_elements, num_int_points, num_stresses))
-        for i in range(self.num_elements):
-            element = self.mesh.elements[i]
-            element_dofs = self.nodes_to_dof_indices(element.node_map)
-            element_U = self.U[element_dofs]
-            stresses[i,:,:] = element.calc_stresses(element_U)
-        self.stresses = stresses
+        self.stresses = self.stress_map.dot(self.U)
+        self.stresses_per_point = self.stresses.reshape((-1,3))
+
+    
+    def calc_dynamic_stresses(self):
+        print(self.stress_map.shape)
+        print(self.U_per_time_step.shape)
+        self.stresses = self.stress_map.dot(self.U_per_time_step)
+        print(self.stresses.shape)
+        self.stresses_per_point = self.stresses.reshape((-1,3,self.nt+1))
+        return self.stresses_per_point
 
 
     def plot_stresses(self, stress_type):
         if stress_type == 'x' or stress_type == 'xx':
-            index = 0
+            stress_index = 0
         elif  stress_type == 'y' or stress_type == 'yy':
-            index = 1
+            stress_index = 1
         elif  stress_type == 'tao' or stress_type == 'xy':
-            index = 2
+            stress_index = 2
 
         plt.figure()
-        j = 0
-        integration_points = np.zeros((1,2))
-        stress_values = np.zeros((1,3))
-        for element in self.mesh.elements:
-            element.evaluate_integration_coordinates()
-            j += 1
-            for i in range(len(element.integration_coordinates)):
-                integration_point = element.integration_coordinates[i,:]
-                integration_points = np.vstack((integration_points, integration_point))
-                stress_values = np.vstack((stress_values, element.stresses[i, :]))
-        plt.scatter(integration_points[1:,0], integration_points[1:,1], c=stress_values[1:,index])
+        stresses_per_integration_point = self.stresses.reshape((-1,3))
+        plot_stresses = []
+        for i in range(stresses_per_integration_point.shape[0]):
+            plot_stresses.append(stresses_per_integration_point[i,stress_index])
+        plt.scatter(self.integration_coordinates[:,0], self.integration_coordinates[:,1], c=plot_stresses)
 
         plt.title(f'Stress (sigma_{stress_type}) Color Plot with {self.num_elements} Elements')
         plt.xlabel('x1 (m)')
         plt.ylabel('x2 (m)')
         plt.colorbar()
         plt.show()
+
+    def plot_dynamic_stresses(self, stress_type, time_step=None, dof=None):
+        if stress_type == 'x' or stress_type == 'xx':
+            stress_index = 0
+        elif  stress_type == 'y' or stress_type == 'yy':
+            stress_index = 1
+        elif  stress_type == 'tao' or stress_type == 'xy':
+            stress_index = 2
+        
+        if time_step is None and dof is None:
+            print("Please supply either a time steo or a dof.")
+        elif time_step is not None and dof is None:
+            # plot_stresses = self.stresses_per_point[:,:,time_step]
+            plot_stresses = []
+            for i in range(self.stresses_per_point.shape[0]):
+                plot_stresses.append(self.stresses_per_point[i,stress_index,time_step])
+            plt.figure()
+            plt.scatter(self.integration_coordinates[:,0], self.integration_coordinates[:,1], c=plot_stresses)
+
+            plt.title(f'Stress (sigma_{stress_type}) Color Plot with {self.num_elements} Elements')
+            plt.xlabel('x1 (m)')
+            plt.ylabel('x2 (m)')
+            plt.colorbar()
+            plt.show()
+        elif dof is not None and time_step is None:
+            t = np.linspace(self.t0, self.tf, self.nt+1)
+            plot_stresses = self.stresses_per_point[dof, stress_index, :]
+            plt.figure()
+            plt.plot(t, plot_stresses, '-bo')
+            plt.title(f'Stress (sigma_{stress_type}) Color Plot with {self.num_elements} Elements')
+            plt.xlabel('t (s)')
+            plt.ylabel('stress (Pa)')
+            plt.show()
+        else:
+            print(self.stresses_per_point[dof, stress_index, time_step])
 
 if __name__ == "__main__":
     from material import IsotropicMaterial

@@ -1,4 +1,5 @@
 import numpy as np
+import numpy.matlib as matlib
 from numpy.core.fromnumeric import shape
 
 
@@ -40,6 +41,7 @@ class QuadElement(Element):
 
         oosqrt3 = 1/np.sqrt(3)
         self.parametric_integration_coordinates = np.array([[-oosqrt3, -oosqrt3], [-oosqrt3, oosqrt3], [oosqrt3, -oosqrt3], [oosqrt3, oosqrt3]])
+        self.num_integration_points = 4
 
 
     '''
@@ -47,12 +49,12 @@ class QuadElement(Element):
     '''
     def calc_k_local(self):
         def calc_k_local_integrand(zeta, eta):
-            E_local = self.calc_e_local_plane_strain()
-            pn_ppara = self.calc_jacobian_parametric_to_shape(zeta, eta)
-            J = self.calc_j(pn_ppara)
-            B = self.calc_b(J, pn_ppara)
-            det_J = np.linalg.det(J)
-            integrand = np.dot(B.T, np.dot(E_local, np.dot(B, det_J)))
+            self.E_local = self.calc_e_local_plane_strain()
+            self.pn_ppara = self.calc_jacobian_parametric_to_shape(zeta, eta)
+            self.J = self.calc_j(self.pn_ppara)
+            self.B = self.calc_b(self.J, self.pn_ppara)
+            self.det_J = np.linalg.det(self.J)
+            integrand = np.dot(self.B.T, np.dot(self.E_local, np.dot(self.B, self.det_J)))
             return integrand
 
         K_local = self.thickness*self.second_order_double_integral_gauss_quadrature(calc_k_local_integrand)
@@ -107,6 +109,7 @@ class QuadElement(Element):
             B[1,i*2+1] = pn_pcart[1,i]
             B[2,i*2] = pn_pcart[1,i]
             B[2,i*2+1] = pn_pcart[0,i]
+        self.B = B
         return B
 
     
@@ -194,28 +197,80 @@ class QuadElement(Element):
         return dn4_deta
 
 
+    '''
+    Assembles the stress calculation map
+    '''
+    def assemble_stress_map(self):
+        num_int_points = 4   # TODO generalize for non-4-node quads!!
+        num_stresses = 3     # TODO generalize for non-2D!!
+        # integration points of this element TODO generalize for non-4-node quads!!?
+        zeta_eta = self.parametric_integration_coordinates
+
+        E_local = self.E_local
+
+        # for j in range(len(zeta_eta)):
+        #     pn_ppara = self.calc_jacobian_parametric_to_shape(zeta_eta[j][0], zeta_eta[j][1])
+        #     J = self.calc_j(pn_ppara)
+        #     if j == 0:
+        #         B_local = self.calc_b(J, pn_ppara)
+        #     else:
+        #         B_local = np.vstack(B_local, self.calc_b(J, pn_ppara))
+
+        B_stresses = self.calc_B_stresses()
+        # E_local_stacked = matlib.repmat(E_local, 4, 1)
+        E_stresses = np.kron(np.eye(num_int_points), self.E_local)
+
+        self.stress_map = np.dot(E_stresses, B_stresses)
+
+            # stresses[j,:] = np.dot(E_local, np.dot(B_local, U)).reshape((num_stresses,))
+        # self.stresses = stresses
+        return self.stress_map
+
+
+    '''
+    Calculates the B matrix for the stress calculation map.
+    '''
+    def calc_B_stresses(self):
+        zeta_eta = self.parametric_integration_coordinates
+
+        for j in range(len(zeta_eta)):
+            pn_ppara = self.calc_jacobian_parametric_to_shape(zeta_eta[j][0], zeta_eta[j][1])
+            J = self.calc_j(pn_ppara)
+            if j == 0:
+                B_local = self.calc_b(J, pn_ppara)
+            else:
+                B_local = np.vstack((B_local, self.calc_b(J, pn_ppara)))    # TODO should be hstack?
+                
+        return B_local
+
 
     '''
     Calculates the stresses at the integration points.
     '''
     def calc_stresses(self, U):
-        num_int_points = 4   # TODO generalize for non-4-node quads!!
-        num_stresses = 3     # TODO generalize for non-2D!!
-        stresses = np.zeros((num_int_points, num_stresses))
-        # integration points of this element TODO generalize for non-4-node quads!!?
-        oor3 = 1/np.sqrt(3)
-        zeta_eta = self.parametric_integration_coordinates
+        # num_int_points = 4   # TODO generalize for non-4-node quads!!
+        # num_stresses = 3     # TODO generalize for non-2D!!
+        # stresses = np.zeros((num_int_points, num_stresses))
+        # # integration points of this element TODO generalize for non-4-node quads!!?
+        # oor3 = 1/np.sqrt(3)
+        # zeta_eta = self.parametric_integration_coordinates
 
-        E_local = self.E_local
-        self.U = U
+        # E_local = self.E_local
+        # self.U = U
 
-        for j in range(len(zeta_eta)):
-            pn_ppara = self.calc_jacobian_parametric_to_shape(zeta_eta[j][0], zeta_eta[j][1])
-            J = self.calc_j(pn_ppara)
-            B_local = self.calc_b(J, pn_ppara)
-            stresses[j,:] = np.dot(E_local, np.dot(B_local, U)).reshape((num_stresses,))
-        self.stresses = stresses
-        return stresses
+        # for j in range(len(zeta_eta)):
+        #     pn_ppara = self.calc_jacobian_parametric_to_shape(zeta_eta[j][0], zeta_eta[j][1])
+        #     J = self.calc_j(pn_ppara)
+        #     B_local = self.calc_b(J, pn_ppara)
+        #     stresses[j,:] = np.dot(E_local, np.dot(B_local, U)).reshape((num_stresses,))
+        # self.stresses = stresses
+        self.stresses = np.dot(self.stress_map, U).reshape((-1,3))
+        return self.stresses
+
+    def assemble(self):
+        self.calc_k_local()
+        self.assemble_stress_map()
+        self.evaluate_integration_coordinates()
 
     
 class TriangleElement(Element):
