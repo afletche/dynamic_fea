@@ -23,19 +23,26 @@ geo = DesignGeometry(path_name + file_name)
 
 aluminum = IsotropicMaterial(name='aluminum', E=68e9, nu=0.36)
 pla = IsotropicMaterial(name='pla', E=4.1e9)
+nylon = IsotropicMaterial(name='nylon', E=2.7e9, nu = 0.39)
 thickness = 0.1
 
 
 ''' Inputs '''
-NODES_PER_LENGTH = 0.5
+NODES_PER_LENGTH = 50.
+# NODES_PER_LENGTH = 5. BAD
 
 
 down_direction = np.array([0., 0., -1.])
 ''' Points to be projected'''
-point_00 = np.array([0., -2.5, 10.])
-point_01 = np.array([0., 2.5, 10.])
-point_10 = np.array([10, -2.5, 10.])
-point_11 = np.array([10, 2.5, 10.])
+# point_00 = np.array([0., -2.5, 10.])
+# point_01 = np.array([0., 2.5, 10.])
+# point_10 = np.array([10, -2.5, 10.])
+# point_11 = np.array([10, 2.5, 10.])
+
+point_00 = np.array([0., 0., 10.])
+point_01 = np.array([0., 0.1, 10.])
+point_10 = np.array([0.5, 0., 10.])
+point_11 = np.array([0.5, 0.1, 10.])
 
 
 '''
@@ -67,7 +74,7 @@ geo.evaluate()
 
 mesh_nodes = cantilever_pointset.physical_coordinates.reshape(cantilever_pointset.shape)
 
-# # Plot mesh
+# Plot mesh
 # vp = Plotter(axes=1)
 # nodes1 = Points(mesh_nodes.reshape((-1,3)), r = 7, c = 'plum').legend('mesh')
 # vp.show(nodes1, 'Mesh', at=0, viewup="z", interactive = True)
@@ -87,18 +94,18 @@ for u in range(mesh_nodes.shape[0]-1):
         node_11_index = (u+1)*mesh_nodes.shape[1] + (v+1)
         node_map = np.array([node_00_index, node_01_index, node_10_index, node_11_index])
 
-        elements.append(QuadElement(nodes, node_map, pla, thickness))
+        elements.append(QuadElement(nodes, node_map, nylon, thickness))
 
-mesh = UnstructuredMesh(name='cantilever_mesh', nodes=cantilever_pointset.physical_coordinates[:,:2] ,elements=elements)
+mesh = UnstructuredMesh(name='cantilever_mesh', nodes=cantilever_pointset.physical_coordinates[:,:2], elements=elements)
 
 
 cantilever_prob_bc = []
-for i in range(mesh_nodes.shape[1]):
-    cantilever_prob_bc.append((i, 0, 0))
-    cantilever_prob_bc.append((i, 1, 0))
+# for i in range(mesh_nodes.shape[1]):
+#     cantilever_prob_bc.append((i, 0, 0))
+#     cantilever_prob_bc.append((i, 1, 0))
 
-x_bounds = np.array([8.99, 10.01])
-y_bounds = np.array([2.49, 2.51])
+x_bounds = np.array([0.24, 0.26])
+y_bounds = np.array([-5.01, 5.01])
 mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
 mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
 mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
@@ -108,86 +115,50 @@ mask_y = np.logical_and(mask_y1, mask_y2)
 mask = np.logical_and(mask_x, mask_y)
 
 bc_node_indices = np.argwhere(mask)
-print(bc_node_indices)
-# load = np.array([1.e7, 0.])
 for node in bc_node_indices[:,0]:
     cantilever_prob_bc.append((node, 0, 0))
     cantilever_prob_bc.append((node, 1, 0))
 
-load_cases = []
-
-# ''' Load case Ex: downward on upper right tip'''
-# upper_right_element = mesh.elements[-1]
-# upper_right_node = upper_right_element.node_map[-1]
-# cantilever_prob_loads = [
-#     (upper_right_node, np.array([0., 5.e6]))
-# ]
-# load_cases.append(cantilever_prob_loads)
-
-''' Load case 1: Distributed load on motor mount
-x_bounds = np.array([8.99, 10.01])
-y_bounds = np.array([2.49, 2.51])
-# x_bounds = np.array([9.99, 10.01])
-# y_bounds = np.array([-2.51, 2.51])
-mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
-mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
-mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
-mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
-mask_x = np.logical_and(mask_x1, mask_x2)
-mask_y = np.logical_and(mask_y1, mask_y2)
-mask = np.logical_and(mask_x, mask_y)
-
-load_nodes = mesh.nodes[mask]
-load_node_indices = np.argwhere(mask)
-load = np.array([0., 1.e8])
-# load = np.array([1.e7, 0.])
-load_per_node = load/load_node_indices.shape[0]
-cantilever_prob_loads = []
-for node in load_node_indices[:,0]:
-    cantilever_prob_loads.append((node, load_per_node))
-
-load_cases.append(cantilever_prob_loads)
-'''
-
+print('bc_nodes', bc_node_indices)
 ''' Load case 2: Distributed load on motor mount'''
-x_bounds = np.array([8.99, 10.01])
-y_bounds = np.array([2.49, 2.51])
-mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
-mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
-mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
-mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
-mask_x = np.logical_and(mask_x1, mask_x2)
-mask_y = np.logical_and(mask_y1, mask_y2)
-mask = np.logical_and(mask_x, mask_y)
+# x_bounds = np.array([8.99, 10.01])
+# y_bounds = np.array([2.49, 2.51])
+# mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
+# mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
+# mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
+# mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
+# mask_x = np.logical_and(mask_x1, mask_x2)
+# mask_y = np.logical_and(mask_y1, mask_y2)
+# mask = np.logical_and(mask_x, mask_y)
 
-load_nodes = mesh.nodes[mask]
-load_node_indices = np.argwhere(mask)
-load = np.array([0., 1.e2])
-# load = np.array([1.e7, 0.])
-load_per_node = load/load_node_indices.shape[0]
-cantilever_prob_loads = []
-for node in load_node_indices[:,0]:
-    cantilever_prob_loads.append((node, load_per_node))
+# load_nodes = mesh.nodes[mask]
+# load_node_indices = np.argwhere(mask)
+# load = np.array([0., 1.e2])
+# # load = np.array([1.e7, 0.])
+# load_per_node = load/load_node_indices.shape[0]
+# cantilever_prob_loads = []
+# for node in load_node_indices[:,0]:
+#     cantilever_prob_loads.append((node, load_per_node))
 
-x_bounds = np.array([-0.01, .01])
-y_bounds = np.array([2.49, 2.51])
-mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
-mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
-mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
-mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
-mask_x = np.logical_and(mask_x1, mask_x2)
-mask_y = np.logical_and(mask_y1, mask_y2)
-mask = np.logical_and(mask_x, mask_y)
+# x_bounds = np.array([-0.01, .01])
+# y_bounds = np.array([2.49, 2.51])
+# mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
+# mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
+# mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
+# mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
+# mask_x = np.logical_and(mask_x1, mask_x2)
+# mask_y = np.logical_and(mask_y1, mask_y2)
+# mask = np.logical_and(mask_x, mask_y)
 
-load_nodes = mesh.nodes[mask]
-load_node_indices = np.argwhere(mask)
-load = np.array([0., 1.e2])
-# load = np.array([1.e7, 0.])
-load_per_node = load/load_node_indices.shape[0]
-for node in load_node_indices[:,0]:
-    cantilever_prob_loads.append((node, load_per_node))
+# load_nodes = mesh.nodes[mask]
+# load_node_indices = np.argwhere(mask)
+# load = np.array([0., 1.e2])
+# # load = np.array([1.e7, 0.])
+# load_per_node = load/load_node_indices.shape[0]
+# for node in load_node_indices[:,0]:
+#     cantilever_prob_loads.append((node, load_per_node))
 
-load_cases.append(cantilever_prob_loads)
+# load_cases.append(cantilever_prob_loads)
 
 
 ''' Run for each load case'''
@@ -222,35 +193,71 @@ load_cases.append(cantilever_prob_loads)
 # cantilever_prob_loads = [(0, np.array([0., 0.]))]
 # load_cases.append(cantilever_prob_loads)
 
+t0 = 0.
+tf = 0.1
+nt = (tf-t0)*1000
+t_eval = np.linspace(t0, tf, nt+1)
+load_cases = []
+dynamic_loads = []
+input_loads = [[np.array([0., 1.e2]), np.array([0., 0.e1]), np.array([0., 1.e2]), np.array([0., 0.e1])],
+                [np.array([0., 1.e2]), np.array([0., 0.e1]), np.array([0., 1.e2]), np.array([0., 0.e1])]]
+t_loads = [0., tf/4, tf/2, tf*3/4]
+num_loads = len(input_loads)
+for i, t in enumerate(t_loads):
+    # t = t_loads[i]
+    dynamic_loads_per_time = []
+    x_bounds = np.array([-0.001, 0.031])
+    y_bounds = np.array([0.09, 0.11])
+    mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
+    mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
+    mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
+    mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
+    mask_x = np.logical_and(mask_x1, mask_x2)
+    mask_y = np.logical_and(mask_y1, mask_y2)
+    mask = np.logical_and(mask_x, mask_y)
+
+    load_nodes = mesh.nodes[mask]
+    load_node_indices = np.argwhere(mask)
+    load = input_loads[0][i]
+    load_per_node = load/load_node_indices.shape[0]
+    for node in load_node_indices[:,0]:
+        dynamic_loads_per_time.append((node, load_per_node))
+
+    x_bounds = np.array([0.469, .501])
+    y_bounds = np.array([0.09, 0.11])
+    mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
+    mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
+    mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
+    mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
+    mask_x = np.logical_and(mask_x1, mask_x2)
+    mask_y = np.logical_and(mask_y1, mask_y2)
+    mask = np.logical_and(mask_x, mask_y)
+
+    load_nodes = mesh.nodes[mask]
+    load_node_indices = np.argwhere(mask)
+    load = input_loads[1][i]
+    load_per_node = load/load_node_indices.shape[0]
+    for node in load_node_indices[:,0]:
+        dynamic_loads_per_time.append((node, load_per_node))
+
+    dynamic_loads.append([t, dynamic_loads_per_time])
+load_cases.append(dynamic_loads)
+
 ''' Run dynamics for each load case'''
 for i, load_case in enumerate(load_cases):
     print(f'------load case {i}-----')
-    cantilever_prob = FEA(mesh=mesh, loads=load_case, boundary_conditions=cantilever_prob_bc)
-    # cantilever_prob.setup_dynamics()
+    cantilever_prob = FEA(mesh=mesh, boundary_conditions=cantilever_prob_bc)
     cantilever_prob.setup_dynamics()
-    t0 = 0.
-    tf = 0.01
-    # tf = 10.
-    nt = 5
-    cantilever_prob.evaluate_dynamics(t0=t0, tf=tf, nt=nt)# , x0=steady_sol)
-    # print('___Displacements___')
+    cantilever_prob.evaluate_dynamics(loads=load_case, t_eval=t_eval)
     U_reshaped = cantilever_prob.U_per_dim_per_time
+
     stresses = cantilever_prob.calc_dynamic_stresses()
-    # cantilever_prob.plot_dynamic_stresses('xx', time_step=-1)
-    # cantilever_prob.plot_dynamic_stresses('yy', time_step=-1)
-    # cantilever_prob.plot_dynamic_stresses('xy', time_step=-1)
-    # cantilever_prob.plot_dynamic_stresses('yy', dof=-1)
+    cantilever_prob.plot_dynamic_stresses('xx', time_step=-1)
+    cantilever_prob.plot_dynamic_stresses('yy', time_step=-1)
+    cantilever_prob.plot_dynamic_stresses('xy', time_step=-1)
+    cantilever_prob.plot_dynamic_stresses('yy', dof=-1)
 
-    plt.figure()
-    t = np.linspace(t0, tf, nt+1)
-    stress_plot = plt.plot(t, stresses[-1,1,:], '-ro', label='y-stress')
-    disp_plot = plt.plot(t, (cantilever_prob.U[-1, :] - cantilever_prob.U[-3, :])*10**9*5, '-b', label='relative y-displacement (*5e9)')
-    plt.title(f'Stress and relative dislpacement of last element in the Y-direction')
-    plt.xlabel('t (s)')
-    plt.ylabel('stress (Pa) and relative displacement (m *5e9)')
-    plt.legend()
-    plt.show()
-
+    # print('___Displacements___')
     # print(cantilever_prob.U)
     # print(cantilever_prob.U.shape)
     # print('max U_x: ', max(abs(U_reshaped[:,0])))
@@ -264,12 +271,12 @@ for i, load_case in enumerate(load_cases):
     # print('min sigma_xy: ', min(cantilever_prob.stresses[:,:,2].reshape((-1,))))
 
 
-plt.plot(t, cantilever_prob.U[-1, :], '-r', label='Upper right node')
-plt.plot(t, cantilever_prob.U[-3, :], '-b', label='Node below upper right node')
+plt.plot(t_eval, cantilever_prob.U[-1, :], '-r', label='Upper right node')
+plt.plot(t_eval, cantilever_prob.U[-3, :], '-b', label='Node below upper right node')
 
 plt.title(f'Y-Displacement of Adjacent Nodes')
 plt.xlabel('t (s)')
-plt.ylabel('stress (Pa) and relative displacement (m *5e9)')
+plt.ylabel('Displacement (m)')
 plt.legend()
 plt.show()
 
@@ -277,22 +284,4 @@ plt.show()
 # plt.plot(t, cantilever_prob.rigid_body_disp[1,:].reshape((-1,)), '-bo')
 # plt.show()
 
-
-for i in range(nt):
-# i = -1
-    plt.plot(mesh.nodes[:,0], mesh.nodes[:,1], 'bo')
-
-    U_reshaped_plot = U_reshaped[:,:,i]
-    nodes = mesh.nodes
-    max_x_dist = np.linalg.norm(max(nodes[:,0]) - min(nodes[:,0]))
-    max_y_dist = np.linalg.norm(max(nodes[:,1]) - min(nodes[:,1]))
-    scale_dist = np.linalg.norm(np.array([max_x_dist, max_y_dist]))
-    if max(np.linalg.norm(U_reshaped_plot, axis=1)) != 0.:
-        visualization_scaling_factor = scale_dist*0.1/max(np.linalg.norm(U_reshaped_plot, axis=1))
-        # visualization_scaling_factor = 1.
-    else:
-        visualization_scaling_factor = 0
-    deformed_nodes = nodes + U_reshaped_plot*visualization_scaling_factor
-    # deformed_nodes = nodes + U_reshaped_plot
-    plt.plot(deformed_nodes[:,0], deformed_nodes[:,1], 'r*')
-    plt.show()
+cantilever_prob.plot_dynamics(show_plots=False, video_file_name='displacement_animation.avi', fps=20)

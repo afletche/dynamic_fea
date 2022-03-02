@@ -5,18 +5,15 @@ Date: 11/24
 This class is for performing 2D structural FEA problems.
 '''
 
-from os import name
+
 from pprint import pprint
-from time import time_ns
 import numpy as np
-from numpy.core.fromnumeric import size
-from numpy.core.numeric import indices
 import scipy.sparse as sps
 from scipy.sparse.linalg import spsolve
 import matplotlib.pyplot as plt
 import time
-
-from ufl import zero
+import cv2
+import os
 
 
 class FEA:
@@ -137,8 +134,12 @@ class FEA:
                     self.F[load_component_dof] = force[i]
 
 
+    def reset_loads(self):
+        self.F = sps.lil_matrix((self.num_total_dof, 1))
+
+
     '''
-    Apples the boundary conditions to the FEA problem.
+    Applies the boundary conditions to the FEA problem.
     
     Inputs:
     - boundary_conditions : List : [(node1, axis1, displacement1), (node2, ...), ...]
@@ -292,7 +293,7 @@ class FEA:
         mass_per_node = 1
         M = sps.eye(self.size_K_ff, format='csc')*mass_per_node
         M_inv = sps.linalg.inv(M)
-        self.dampening_per_node = 0.
+        self.dampening_per_node = 50.
         dampening = sps.eye(self.size_K_ff, format='csc')*self.dampening_per_node
         # A_10 = -spsolve(M, self.K_ff)
         A_10 = -M_inv.dot(self.K_ff)
@@ -325,201 +326,110 @@ class FEA:
         self.B = B
         self.C = C
 
+
     '''
-    Evaluates dynamics with no fixed boundaries.
+    Evaluates dynamimcs for a fixed structural frame.
+
+    @param loads [[t_1, [[ind1, F1], [ind2, F2], ...]_1], [t_2, [[]]_2], ...] t is the vector of times, ind is the node index where the load is applied F is the of load vector (3,)
     '''
-    def setup_dynamics_not_fixed(self):
-        self.setup()
-        size_K = self.K.shape[0]
-        mass_per_node = 1
-        M = sps.eye(size_K, format='csc')*mass_per_node
-        M_inv = sps.linalg.inv(M)
-        self.dampening_per_node = 0.
-        dampening = sps.eye(size_K, format='csc')*self.dampening_per_node
-        A_10 = -M_inv.dot(self.K)
-        A_11 = -M_inv.dot(dampening)
-        A = sps.lil_matrix((2*size_K, 2*size_K))
-        A[:size_K, size_K:] = sps.eye(size_K, format='csc')
-        A[size_K:, :size_K] = A_10
-        A[size_K:, size_K:] = A_11
-        A = A.tocsc()
-        # print('Eigenvalues of A: ', sps.linalg.eigs(A)[0])
-        self.eigs = sps.linalg.eigs(A)[0]  # TODO check if basis is also returned
-        print(A.shape)
-        # print('det: ', np.linalg.det(A.todense()))
-        # A_inv = sps.linalg.inv(A)
-        # print('NORM: ', np.linalg.norm((A.dot(A_inv)).todense() - np.eye(A.shape[0])))
-
-        B = sps.lil_matrix((2*size_K, size_K))
-        B[size_K:,:] = M_inv
-        B = B.tocsc()
-
-        C = sps.lil_matrix((size_K, 2*size_K))
-        C[:, :size_K] = sps.eye(size_K)
-        C = C.tocsc()
-
-        self.A = A
-        self.B = B
-        self.C = C
-
-
-
-    def evaluate_dynamics(self, t0, tf, nt=None, x0=None):
-        if nt is None:
-            nt = int((tf-t0)*100)
+    def evaluate_dynamics(self, loads, t_eval, t0=0, x0=None):
         if x0 is None:
             x0 = np.zeros((2*self.K_ff.shape[0],1))
+            # x0 = np.zeros((1,2*self.K_ff.shape[0]))
         x = x0
-        self.t0 = t0
-        self.tf = tf
-        self.nt = nt
 
+        self.t_eval = t_eval
+        if t0 in t_eval:
+            t_eval = np.delete(t_eval, 0)
+        self.nt = len(t_eval)
+        
         self.x = x
         self.rigid_body_disp = np.zeros((self.num_dimensions,1))
-        tao = np.linspace(t0, tf, nt+1)
-        tao = np.delete(tao, 0)
-        z = np.zeros_like(self.F_f.todense())
-        
-        # print(self.F_f.todense()[:,0])
-        # print(z[:,0])
-        # print(self.F_f.todense().shape)
-        # print(z.shape)
-        # u = np.linspace(z[:,0], self.F_f.todense()[:,0], nt)
+
         u = np.zeros_like(self.F_f.todense())
         u = sps.csc_matrix(u)
 
         identity_mat = sps.eye(self.A.shape[0])
 
+        t_eval = np.sort(t_eval)
+        t_step_inputs = np.array([i[0] for i in loads])
+        input_counter = 0
+
+        if len(t_step_inputs) == 1:
+            t_next_interval = np.Inf
+        else:
+            t_next_interval = t_step_inputs[input_counter+1]
+        self.reset_loads()
+        self.apply_loads(loads[input_counter][1])
+        self.F = self.F.tocsc()
+        self.F_f = self.F[self.free_dof]
+        self.F_p = self.F[self.prescribed_dof]    # don't know yet
         self.reshaped_Ff = self.F_f.reshape((-1, self.num_dimensions))
+        evaluated_dynamics = {t0: x0} # {t: x}
+        evaluated_exponentials = {} # {delta_t, e^(A*(delta_t))}
+        for t in t_eval:
+            print(t)
+            while t >= t_next_interval:
+                
+                last_eval_t = list(evaluated_dynamics.keys())[-1]
+                last_eval_x = list(evaluated_dynamics.values())[-1]
 
-        for i in range(len(tao)):
-        # for i in range(len(tao)):
-            if i%1 == 0:
-                print(i)
-            # x = self.evaluate_time_interval(tao[i], tao[i+1], x, u)
-            start_exponential_time = time.time()
-            # if self.dampening_per_node == 0:
-            #     diag_vec_01 = np.ones((self.size_K_ff))*(np.exp(1)-1)
-            #     diag_01 = np.diag(diag_vec_01)
-            #     e_At_01 = np.ones((self.size_K_ff, self.size_K_ff))*(tao[i]-t0) + diag_01
-            #     print((self.A[self.size_K_ff:, :self.size_K_ff]*(tao[i]-t0)).todense())
-            #     e_At_10 = sps.linalg.expm(self.A[self.size_K_ff:, :self.size_K_ff]*(tao[i]-t0)).todense()
-            #     zeros_mat = np.ones_like(e_At_01)
-            #     e_At = np.block([[zeros_mat, e_At_01], [e_At_10, zeros_mat]])
-            #     print(tao[i]-t0)
-            #     print('zombie', sps.linalg.expm((self.A*(tao[i]-t0))[self.size_K_ff:, :self.size_K_ff]))
-            #     print('validator', self.A*(tao[i]-t0))
-            #     # print('sps', sps.linalg.expm(self.A*(tao[i]-t0)))
-            # else:
-            e_At = sps.linalg.expm(self.A*(tao[i]-t0))
-            end_exponential_time = time.time()
-            print('time for exponential: ', end_exponential_time - start_exponential_time)
-            x = e_At.dot(x0) + self.A_inv.dot((e_At - identity_mat).dot((self.B.dot(self.F_f)).todense()))
-            # x = self.evaluate_time_interval(tao[i], tf, x)
-            self.x = np.hstack((self.x, x))
+                # evaulate to end of step input (from last evaluated dynamic) and add to evaluated_dynamics list
+                delta_t = t_next_interval-last_eval_t
+                if delta_t in evaluated_exponentials.keys():
+                    e_At = evaluated_exponentials[delta_t]
+                else:
+                    e_At = sps.linalg.expm(self.A*(delta_t))
+                    evaluated_exponentials[delta_t] = e_At
+                x_next_interval = e_At.dot(last_eval_x) + self.A_inv.dot((e_At - identity_mat).dot(self.B.dot(self.F_f)))
+                evaluated_dynamics[t_next_interval] = x_next_interval
 
-            rigid_body_displacement = self.reshaped_Ff.sum(0).T * ((tao[i]-t0)**2)/2
+                rigid_body_displacement = self.reshaped_Ff.sum(0).T * (delta_t**2)/2
+                self.rigid_body_disp = np.hstack((self.rigid_body_disp, rigid_body_displacement))
+
+                # update self.F and self.F_f
+                self.reset_loads()
+                self.apply_loads(loads[input_counter][1])
+                self.F = self.F.tocsc()
+                self.F_f = self.F[self.free_dof]
+                self.F_p = self.F[self.prescribed_dof]    # don't know yet
+                self.reshaped_Ff = self.F_f.reshape((-1, self.num_dimensions))
+
+
+                input_counter += 1
+                if input_counter == len(t_step_inputs):
+                    t_next_interval = np.Inf
+                else:
+                    t_next_interval = t_step_inputs[input_counter]
+
+            # evaluate from last last evaluated dynamic and add to evaluated_dynamics list.
+            last_eval_t = list(evaluated_dynamics.keys())[-1]
+            last_eval_x = list(evaluated_dynamics.values())[-1]
+
+            # evaulate to end of step input (from last evaluated dynamic) and add to evaluated_dynamics list
+            delta_t = t-last_eval_t
+            if delta_t in evaluated_exponentials.keys():
+                e_At = evaluated_exponentials[delta_t]
+            else:
+                e_At = sps.linalg.expm(self.A*(delta_t))
+                evaluated_exponentials[delta_t] = e_At
+
+            x_t = e_At.dot(last_eval_x) + (self.A_inv.dot((e_At - identity_mat).dot(self.B.dot(self.F_f)))).todense()
+            # x_t = e_At.dot(last_eval_x) + self.A_inv.dot((e_At - identity_mat).dot((self.B.dot(self.F_f)).todense()))
+            # x_t = x_t.reshape((-1,))
+            evaluated_dynamics[t] = x_t
+            self.x = np.hstack((self.x, x_t))
+
+            rigid_body_displacement = self.reshaped_Ff.sum(0).T * (delta_t**2)/2
             self.rigid_body_disp = np.hstack((self.rigid_body_disp, rigid_body_displacement))
-            # self.x += x
 
-        self.U = np.zeros((self.num_total_dof, nt+1))
-        # self.U = np.zeros((self.num_total_dof, 1))
+            # all of the time steps can be built, and then all of the matrix exponentials can be calculated in parallel
+            # These matrix exponentials can then be plugged into equations to get all states in parallel.
+
+        self.U = np.zeros((self.num_total_dof, self.nt+1))
         self.U[self.free_dof,:] = self.C.dot(self.x)
-        # self.U = self.C.dot(self.x)
-        self.U_per_time_step = self.U.reshape((-1, nt+1))
-        self.U_per_dim_per_time = self.U.reshape((self.num_nodes, -1, nt+1))
-
-
-    def evaluate_dynamics_not_fixed(self, t0, tf, nt=None, x0=None):
-        if nt is None:
-            nt = int((tf-t0)*100)
-        if x0 is None:
-            x0 = np.zeros((2*self.K.shape[0],1))
-        x = x0
-        self.t0 = t0
-        self.tf = tf
-        self.nt = nt
-
-        self.x = x
-        tao = np.linspace(t0, tf, nt-1)
-
-        u = np.zeros_like(self.F_f.todense())
-        u = sps.csc_matrix(u)
-
-        self.A_inv = sps.linalg.inv(self.A)
-        identity_mat = sps.eye(self.A.shape[0])
-
-        for i in range(len(tao)):
-        # for i in range(len(tao)):
-            # if i%100 == 0:
-            print(i)
-            # x = self.evaluate_time_interval_not_fixed(tao[i], tao[i+1], x, u)
-            e_At = sps.linalg.expm(self.A*(tao[i]-t0))
-            x = e_At.dot(x0) + self.A_inv.dot((e_At - identity_mat).dot(self.B.dot(self.F)))
-            # x = self.evaluate_time_interval(tao[i], tf, x)
-            self.x = np.hstack((self.x, x))
-            # self.x += x
-
-        self.U = np.zeros((self.num_total_dof, nt))
-        # self.U = np.zeros((self.num_total_dof, 1))
-        self.U[:,:] = self.C.dot(self.x)    # need to keep slicing to keep self.U as a numpy in order to reshape properly.
-
-        self.U_per_time_step = self.U.reshape((-1, nt))
-        self.U_per_dim_per_time = self.U.reshape((self.num_nodes, -1, nt))
-        self.rigid_body_disp = np.zeros((self.num_dimensions, self.nt))
-        for i in range(self.U_per_dim_per_time.shape[1]):
-            # print(i)
-            # print(np.max(self.U_per_dim_per_time[:,i,:] - self.U_per_dim_per_time[0,i,:]))
-            # print(self.U_per_dim_per_time[0,i,:])
-            # print(self.U_per_dim_per_time[-1,i,:])
-            self.rigid_body_disp[i,:] = self.U_per_dim_per_time[0,i,:]
-            self.U_per_dim_per_time[:,i,:] -= self.U_per_dim_per_time[0,i,:]
-        self.U = self.U_per_dim_per_time.reshape((-1,nt))
-        # print(self.U)
-
-        
-
-    def evaluate_time_interval(self, t0, t1, x0, u):
-        t = t1
-        # gauss_quadrature_tao = (t1-t0)/2
-        t_minus_tao = t-t0
-        e_At = sps.linalg.expm(self.A*t_minus_tao)  # Warning! This becomes really expensive when scaled!!
-        # x = e_At.dot(x0) + e_At.dot(self.B.dot(self.F_f*(t1-t0)))
-        # # x = e_At.dot(self.B.dot(self.F_f*(t1-t0)))
-        carried_x0 = e_At.dot(x0)
-
-        taos = np.linspace(t0, t1, 2)
-        dtao = (t1-t0)/1
-        integrand = np.zeros_like(x0)
-        for i in range(len(taos)-1):
-            gauss_quadrature_tao = (taos[i+1]-taos[i])/2
-            t_minus_tao = t-t0
-            e_At = sps.linalg.expm(self.A*t_minus_tao)
-            integrand += e_At.dot(self.B.dot(self.F_f*(dtao)))
-
-        x = carried_x0 + integrand
-        return x
-
-    def evaluate_time_interval_not_fixed(self, t0, t1, x0, u):
-        t = t1
-        # gauss_quadrature_tao = (t1-t0)/2
-        t_minus_tao = t-t0
-        e_At = sps.linalg.expm(self.A*t_minus_tao)  # Warning! This becomes really expensive when scaled!!
-        # x = e_At.dot(x0) + e_At.dot(self.B.dot(self.F_f*(t1-t0)))
-        # # x = e_At.dot(self.B.dot(self.F_f*(t1-t0)))
-        carried_x0 = e_At.dot(x0)
-
-        taos = np.linspace(t0, t1, 2)
-        dtao = (t1-t0)/1
-        integrand = np.zeros_like(x0)
-        for i in range(len(taos)-1):
-            gauss_quadrature_tao = (taos[i+1]-taos[i])/2
-            t_minus_tao = t-t0
-            e_At = sps.linalg.expm(self.A*t_minus_tao)
-            integrand += e_At.dot(self.B.dot(self.F*(dtao)))
-
-        x = carried_x0 + integrand
-        return x
+        self.U_per_time_step = self.U.reshape((-1, self.nt+1))
+        self.U_per_dim_per_time = self.U.reshape((self.num_nodes, -1, self.nt+1))
 
 
 
@@ -560,6 +470,52 @@ class FEA:
             plt.show()
         else:
             print("WARNING: Plotting not set up for anything other than 2d right now.")
+
+
+    '''
+    Plots dynamics
+    '''
+    def plot_dynamics(self, show_plots=False, save_plots=False, video_file_name=None, fps=10):
+        nodes = self.mesh.nodes
+        max_x_dist = np.linalg.norm(max(nodes[:,0]) - min(nodes[:,0]))
+        max_y_dist = np.linalg.norm(max(nodes[:,1]) - min(nodes[:,1]))
+        scale_dist = np.linalg.norm(np.array([max_x_dist, max_y_dist]))
+        scaling_norms = np.zeros(self.nt)
+        for i in range(self.nt):
+            scaling_norms[i] = np.max(np.linalg.norm(self.U_per_dim_per_time[:,:,i], axis=1))
+        visualization_scaling_factor = scale_dist*0.1/np.max(scaling_norms)
+
+        print('Plotting...')
+        for i, t in enumerate(self.t_eval):
+            plt.figure()
+            plt.plot(self.mesh.nodes[:,0], self.mesh.nodes[:,1], 'bo')
+
+            U_reshaped_plot = self.U_per_dim_per_time[:,:,i]
+            deformed_nodes = nodes + U_reshaped_plot*visualization_scaling_factor
+            plt.plot(deformed_nodes[:,0], deformed_nodes[:,1], 'r*')
+            plt.title(f'Displacement at t={t: 9.5f}')
+            plt.xlabel(f'x (m*{visualization_scaling_factor})')
+            plt.ylabel(f'y (m*{visualization_scaling_factor})')
+            if save_plots or video_file_name is not None:
+                plt.savefig(f'plots/displacement_plot_at_t_{t:9.6f}.png', bbox_inches='tight')
+            if show_plots:
+                plt.show()
+            plt.close()
+
+        if video_file_name is not None:
+            print('Creating Video...')
+            image_folder = 'plots'
+            images = [f'displacement_plot_at_t_{t:9.6f}.png' for t in self.t_eval]
+            frame = cv2.imread(os.path.join(image_folder, images[0]))
+            height, width, layers = frame.shape
+
+            video = cv2.VideoWriter(video_file_name, cv2.VideoWriter_fourcc(*'XVID'), fps, (width,height))
+
+            for image in images:
+                video.write(cv2.imread(os.path.join(image_folder, image)))
+
+            cv2.destroyAllWindows()
+            video.release()
 
 
     '''
@@ -624,7 +580,7 @@ class FEA:
             plt.colorbar()
             plt.show()
         elif dof is not None and time_step is None:
-            t = np.linspace(self.t0, self.tf, self.nt+1)
+            t = self.t_eval
             plot_stresses = self.stresses_per_point[dof, stress_index, :]
             plt.figure()
             plt.plot(t, plot_stresses, '-bo')
