@@ -1,4 +1,3 @@
-from cProfile import label
 import numpy as np
 import matplotlib.pyplot as plt
 import time
@@ -194,7 +193,7 @@ print('bc_nodes', bc_node_indices)
 # load_cases.append(cantilever_prob_loads)
 
 t0 = 0.
-tf = 0.1
+tf = 1.
 nt = (tf-t0)*1000
 t_eval = np.linspace(t0, tf, nt+1)
 load_cases = []

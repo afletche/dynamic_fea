@@ -1,16 +1,12 @@
 import numpy as np
-import numpy.matlib as matlib
-from numpy.core.fromnumeric import shape
-
 
 """Class for defining an element type in FEA."""
 class Element:
 
-    def __init__(self, nodes, node_map, material, thickness=None) -> None:
+    def __init__(self, nodes, node_map, material) -> None:
         self.nodes = nodes
         self.node_map = node_map
         self.material = material
-        self.thickness = thickness
 
         
         
@@ -23,6 +19,20 @@ class Element:
         return np.array([sumx / 4, sumy / 4])
 
 
+    '''
+    Calculates the stiffness matrix of the element.
+    '''
+    def calc_k(self):
+        return
+
+    '''
+    Takes input information and sets up information in usable matrices/structures.
+    '''
+    def setup(self):
+        self.calc_k()
+
+
+
 '''
 The class for a quad element. Currently only set up for 4 node quads.
 '''
@@ -30,9 +40,10 @@ class QuadElement(Element):
     
     
     def __init__(self, nodes, node_map, material, thickness) -> None:
-        super().__init__(nodes, node_map, material, thickness)
+        super().__init__(nodes, node_map, material)
+        self.thickness = thickness
 
-        """ calculate node connectivity"""
+        """ list node connectivity"""
         self.node_connectivity = {}
         self.node_connectivity[node_map[0]] = [node_map[1], node_map[2]]
         self.node_connectivity[node_map[1]] = [node_map[0], node_map[3]]
@@ -47,8 +58,8 @@ class QuadElement(Element):
     '''
     Calculates the local stiffness matrix of an element.
     '''
-    def calc_k_local(self):
-        def calc_k_local_integrand(zeta, eta):
+    def calc_k(self):
+        def calc_k_integrand(zeta, eta):
             self.E_local = self.calc_e_local_plane_strain()
             self.pn_ppara = self.calc_jacobian_parametric_to_shape(zeta, eta)
             self.J = self.calc_j(self.pn_ppara)
@@ -57,9 +68,9 @@ class QuadElement(Element):
             integrand = np.dot(self.B.T, np.dot(self.E_local, np.dot(self.B, self.det_J)))
             return integrand
 
-        K_local = self.thickness*self.second_order_double_integral_gauss_quadrature(calc_k_local_integrand)
-        self.K_local = K_local
-        return K_local
+        K = self.thickness*self.second_order_double_integral_gauss_quadrature(calc_k_integrand)
+        self.K = K
+        return K
 
 
     '''
@@ -150,17 +161,42 @@ class QuadElement(Element):
             y = np.dot(nodes_y, shape_funcs)
             self.integration_coordinates[i,:] = np.array([x, y])
 
+    def assemble_integration_coordinates_map(self):
+        self.integration_coordinates_map = np.array([
+            self.evaluate_n_1(self.parametric_integration_coordinates),
+            self.evaluate_n_2(self.parametric_integration_coordinates),
+            self.evaluate_n_3(self.parametric_integration_coordinates),
+            self.evaluate_n_4(self.parametric_integration_coordinates)
+        ]).T
+        return self.integration_coordinates_map
 
-    def evaluate_n_1(self, zeta, eta):
+    def evaluate_integration_coordinates(self, U=None):
+        if U is None:
+            U = np.zeros(like=self.nodes, dtype=float)
+        deformed_nodes = self.nodes + U
+        self.integration_coordinates = np.dot(self.integration_coordinates_map, deformed_nodes)
+        return self.integration_coordinates
+
+
+
+    def evaluate_n_1(self, zeta_eta):
+        zeta = zeta_eta[:,0]
+        eta = zeta_eta[:,1]
         return (1-zeta)*(1-eta)/4
     
-    def evaluate_n_2(self, zeta, eta):
+    def evaluate_n_2(self, zeta_eta):
+        zeta = zeta_eta[:,0]
+        eta = zeta_eta[:,1]
         return (1-zeta)*(1+eta)/4
 
-    def evaluate_n_3(self, zeta, eta):
+    def evaluate_n_3(self, zeta_eta):
+        zeta = zeta_eta[:,0]
+        eta = zeta_eta[:,1]
         return (1+zeta)*(1-eta)/4
 
-    def evaluate_n_4(self, zeta, eta):
+    def evaluate_n_4(self, zeta_eta):
+        zeta = zeta_eta[:,0]
+        eta = zeta_eta[:,1]
         return (1+zeta)*(1+eta)/4
 
 
@@ -248,29 +284,15 @@ class QuadElement(Element):
     Calculates the stresses at the integration points.
     '''
     def calc_stresses(self, U):
-        # num_int_points = 4   # TODO generalize for non-4-node quads!!
-        # num_stresses = 3     # TODO generalize for non-2D!!
-        # stresses = np.zeros((num_int_points, num_stresses))
-        # # integration points of this element TODO generalize for non-4-node quads!!?
-        # oor3 = 1/np.sqrt(3)
-        # zeta_eta = self.parametric_integration_coordinates
-
-        # E_local = self.E_local
-        # self.U = U
-
-        # for j in range(len(zeta_eta)):
-        #     pn_ppara = self.calc_jacobian_parametric_to_shape(zeta_eta[j][0], zeta_eta[j][1])
-        #     J = self.calc_j(pn_ppara)
-        #     B_local = self.calc_b(J, pn_ppara)
-        #     stresses[j,:] = np.dot(E_local, np.dot(B_local, U)).reshape((num_stresses,))
-        # self.stresses = stresses
         self.stresses = np.dot(self.stress_map, U).reshape((-1,3))
         return self.stresses
 
     def assemble(self):
-        self.calc_k_local()
+        super().setup()
+        self.calc_k()
         self.assemble_stress_map()
-        self.evaluate_integration_coordinates()
+        self.assemble_integration_coordinates_map()
+        # self.evaluate_integration_coordinates()
 
     
 class TriangleElement(Element):
@@ -278,4 +300,119 @@ class TriangleElement(Element):
     def __init__(self, nodes, node_map) -> None:
         super().__init__(nodes, node_map)
 
+
+
+
+'''
+The class for a truss element.
+'''
+class TrussElement(Element):
     
+    
+    def __init__(self, nodes, node_map, material, area) -> None:
+        super().__init__(nodes, node_map, material)
+        self.A = area
+
+        """ list node connectivity"""
+        self.node_connectivity = {}
+        self.node_connectivity[node_map[0]] = [node_map[1]]
+        self.node_connectivity[node_map[1]] = [node_map[0]]
+
+        self.midpoint = (nodes[0] + nodes[1])/2
+
+
+    '''
+    Calculates the element length.
+    '''
+    def calc_l(self):
+        self.displacement_vec = self.nodes[1] - self.nodes[0]
+        self.l = np.linalg.norm(self.displacement_vec)
+        return self.l
+
+    '''
+    Calculates the local stiffness matrix of a truss element.
+    '''
+    def calc_k(self):
+        self.displacement_vec = self.nodes[1] - self.nodes[0]
+        self.calc_l()
+        self.beta = np.arctan2(self.displacement_vec[1], self.displacement_vec[0])
+        c = np.cos(self.beta)
+        c2 = c**2
+        s = np.sin(self.beta)
+        s2 = s**2
+        cs = c*s
+        self.E = self.material.E
+
+        self.K = self.E*self.A/self.l*np.array([
+            [c2, cs, -c2, -cs],
+            [cs, s2, -cs, -s2],
+            [-c2, -cs, c2, cs],
+            [-cs, -s2, cs, s2]])
+
+        return self.K
+
+    
+    def set_A(self, area):
+        self.A = area
+
+    def set_nodes(self, nodes):
+        self.nodes = nodes
+
+
+    '''
+    Calculates the local load vector for self-weight.
+    '''
+    def calc_self_weight(self, g):
+        rho = self.material.density
+        self.r_g_local = rho*self.A*g*self.l*np.array([0, -1/2, 0, -1/2]).reshape((-1,1))
+        return self.r_g_local
+
+
+    '''
+    Assembles a map to calculate the element midpoint from the nodes.    
+    '''
+    def assemble_midpoint_map(self):
+        self.midpoint_map = np.array([0.5, 0.5])
+        return self.midpoint_map
+
+    '''
+    Evaluates the midoint
+    '''
+    def evaluate_midpoint_map(self, U=None):
+        if U is None:
+            U = np.zeros_like(self.nodes)
+        
+        deformed_nodes = self.nodes + U
+        self.midpoint = np.dot(self.midpoint_map, deformed_nodes)
+        return self.midpoint
+
+        
+
+    '''
+    Assembles the stress calculation map
+    '''
+    def assemble_stress_map(self):
+        
+        c = np.cos(self.beta)
+        s = np.sin(self.beta)
+        rotation_matrix = np.array([[c, s, 0, 0], [0, 0, c, s]])
+        relative_disp_map = np.array([-1, 1])
+        E = self.material.E
+        self.stress_map = E/self.l*np.dot(relative_disp_map, rotation_matrix)
+
+        return self.stress_map
+
+    '''
+    Calculates the stresses at the integration points.
+    '''
+    def calc_stresses(self, U):
+        self.stresses = np.dot(self.stress_map, U).reshape((-1,3))
+        return self.stresses
+
+
+
+    def assemble(self):
+        super().setup()
+        self.calc_k()
+        self.assemble_stress_map()
+        self.assemble_midpoint_map()

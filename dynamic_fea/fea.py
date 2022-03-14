@@ -15,6 +15,8 @@ import time
 import cv2
 import os
 
+from dynamic_fea.element import QuadElement, TrussElement
+
 
 class FEA:
 
@@ -29,7 +31,7 @@ class FEA:
         # self.set_material(self.components[0].properties['material'])
         self.set_mesh(mesh)
         
-        self.initialize_ode()
+        # self.initialize_ode() Moved into set_mesh method
 
         self.apply_loads(loads)
         self.apply_boundary_conditions(boundary_conditions)
@@ -107,6 +109,8 @@ class FEA:
         self.prescribed_dof = np.array([])
         self.prescribed_displacement = np.array([])
 
+        self.initialize_ode()
+
 
 
     '''
@@ -132,6 +136,22 @@ class FEA:
                     self.F[load_component_dof] = self.F[load_component_dof].data + force[i]
                 else:
                     self.F[load_component_dof] = force[i]
+
+
+    '''
+    Applies self-weight loads onto the structure.
+
+    Inputs:
+    - g : float : gravitational constant (9.81 for Earth)
+    '''
+    def apply_self_weight(self, g):
+        # For each element, add its weight
+        for i in range(self.num_elements):
+            element = self.mesh.elements[i]
+            element.calc_l()
+            local_F_g = element.calc_self_weight(g)
+            element_dofs = self.nodes_to_dof_indices(element.node_map)
+            self.F[np.ix_(element_dofs)] += local_F_g
 
 
     def reset_loads(self):
@@ -178,21 +198,37 @@ class FEA:
         self.F = sps.lil_matrix((self.num_total_dof, 1))
         self.U = sps.lil_matrix((self.num_total_dof, 1))
 
-        self.stress_map = sps.lil_matrix((self.num_elements*4*3, self.num_total_dof))   # TODO Generalize for 3D non-quads
-        self.integration_coordinates = np.zeros((self.num_elements*4, self.num_dimensions))     # TODO Generalize for 3D non-quads
+        self.stress_maps = {}
+        self.integration_coordinates = {}
+        self.num_quad_elements = 0
+        self.num_truss_elements = 0
+        self.num_stress_evals = 0
+        self.num_stress_eval_points = 0
+        for element in self.mesh.elements:
+            if type(element) is QuadElement:
+                self.num_quad_elements += 1
+                num_stress_types = 3
+                self.num_stress_evals += element.num_integration_points*num_stress_types
+                self.num_stress_eval_points += element.num_integration_points
+            elif type(element) is TrussElement:
+                self.num_truss_elements += 1
+                self.num_stress_evals += 1      # just an axial load
+                self.num_stress_eval_points += 1    # only one value for the whole truss
+
+
+        self.stress_map = sps.lil_matrix((self.num_stress_evals, self.num_total_dof))   # TODO Generalize for 3D non-quads
+        self.stress_eval_points_map = sps.lil_matrix((self.num_stress_eval_points, self.num_nodes))   # TODO Generalize for 3D non-quads
+        self.stress_eval_points = np.zeros((self.num_stress_eval_points, self.num_dimensions))
+
 
 
     '''
     Assembles the global stiffness matrix based on the local stiffness matrices (using element objects)
     '''
     def assemble_k(self):
-        # For each element, add its local stiffness contribution
-        for i in range(self.num_elements):
-            element = self.mesh.elements[i]
-            # local_K = element.calc_k_local()
-            local_K = element.K_local
-            element_dofs = self.nodes_to_dof_indices(element.node_map)
-            self.K[np.ix_(element_dofs, element_dofs)] += local_K
+        # In the future, this could potentially loop over meshes, or perhaps do it's own assembly of something.
+
+        self.K = self.mesh.K
 
     '''
     Gets the DOF indices for the corresponding nodes.
@@ -204,7 +240,11 @@ class FEA:
             dof_indices[2*i+1] = self.dimensions_spanned*nodes[i]+1
         return dof_indices.astype(int)
 
-
+    '''
+    Assembles the connectivity (mostly for plotting).
+    '''
+    def assemble_connectivity(self):
+        self.node_connectivity = self.mesh.node_connectivity
 
     '''
     Calculates the local load vector for an element.
@@ -221,32 +261,63 @@ class FEA:
     '''
     def assemble_stress_map(self):
         # For each element, add its stress map
-        for i in range(self.num_elements):
-            element = self.mesh.elements[i]
+        self.stress_index_map = {'xx' : np.array([]).astype(int), 'yy' : np.array([]).astype(int), 'xy' : np.array([]).astype(int), 'axial' : np.array([]).astype(int)}
+        self.stress_eval_points_indices = {'xx' : np.array([]).astype(int), 'yy' : np.array([]).astype(int), 'xy' : np.array([]).astype(int), 'axial' : np.array([]).astype(int)}
+
+        start_index_stresses = 0
+        end_index_stresses = 0
+        start_index_eval_points = 0
+        end_index_eval_points = 0
+        for element in self.mesh.elements:
             local_stress_map = element.stress_map
             element_dofs = self.nodes_to_dof_indices(element.node_map)
-            start_index = i*element.num_integration_points*3    # 3 types of stresses for 2D TODO Generalize!!
-            end_index = (i+1)*element.num_integration_points*3
-            indices = np.arange(start_index, end_index)
-            self.stress_map[np.ix_(indices, element_dofs)] += local_stress_map
-            start_index = i*element.num_integration_points
-            end_index = (i+1)*element.num_integration_points
-            indices = np.arange(start_index, end_index)
-            self.integration_coordinates[np.ix_(indices, np.array([0,1]))] = element.integration_coordinates
+
+            if type(element) is QuadElement:
+                num_integration_points = element.num_integration_points # same as num eval points (these are gauss-quadrature int points)
+                num_stress_types = 3    # xx, yy, xy so 3 calculated (maybe 4 if von mises is added)
+                num_stress_evals = num_integration_points*num_stress_types
+                end_index_stresses = start_index_stresses + num_stress_evals
+                indices = np.arange(start_index_stresses, end_index_stresses)
+                indices_for_one_stress = np.arange(start_index_stresses, end_index_stresses, num_stress_types).astype(int)
+                self.stress_index_map['xx'] == np.append(self.stress_index_map['xx'], indices_for_one_stress)
+                self.stress_index_map['yy'] == np.append(self.stress_index_map['xx'], indices_for_one_stress+1)
+                self.stress_index_map['xy'] == np.append(self.stress_index_map['xx'], indices_for_one_stress+2)
+                self.stress_map[np.ix_(indices, element_dofs)] = local_stress_map
+                end_index_eval_points = start_index_eval_points + num_integration_points
+                
+                indices = np.arange(start_index_eval_points, end_index_eval_points)
+                self.stress_eval_points_indices['xx'] == np.append(self.stress_eval_points_indices['xx'], indices)
+                self.stress_eval_points_indices['yy'] == np.append(self.stress_eval_points_indices['yy'], indices)
+                self.stress_eval_points_indices['xy'] == np.append(self.stress_eval_points_indices['xy'], indices)
+                self.stress_eval_points_map[np.ix_(indices, element.node_map)] = element.integration_coordinates_map
+            elif type(element) is TrussElement:
+                # num_eval_points = 1 # the one element between the 2 nodes.
+                num_stress_types = 1
+
+                self.stress_index_map['axial'] = np.append(self.stress_index_map['axial'], start_index_stresses)
+                self.stress_map[np.ix_(np.array([start_index_stresses]), element_dofs)] = local_stress_map
+                end_index_stresses = start_index_stresses + 1
+
+                self.stress_eval_points_indices['axial'] = np.append(self.stress_eval_points_indices['axial'], start_index_eval_points)
+                self.stress_eval_points_map[np.ix_(np.array([start_index_stresses]), element.node_map)] = element.midpoint_map
+                end_index_eval_points = start_index_eval_points + 1
+
+            start_index_stresses = end_index_stresses
+            start_index_eval_points = end_index_eval_points
 
 
     '''
     Runs the preliminary setup to solve the problem.
     '''
     def setup(self):
-        for element in self.mesh.elements:
-            element.assemble()
+        self.mesh.setup()
 
         self.assemble_k()
+        self.assemble_connectivity()
         self.assemble_stress_map()
         self.K = self.K.tocsc()
         self.F = self.F.tocsc()
-        self.stress_map.tocsc()      
+        self.stress_map = self.stress_map.tocsc()      
 
         self.free_dof = np.setdiff1d(self.total_dof, self.prescribed_dof)   # all dof that are not prescribed are free
         
@@ -260,9 +331,6 @@ class FEA:
 
         self.U_f = self.U[self.free_dof]          # don't know yet
         self.U_p = self.U[self.prescribed_dof]
-
-        # self.K = self.K.tocsc()   # TODO figure out when is more efficient
-        # self.F = self.F.tocsc() 
 
 
     '''
@@ -293,7 +361,7 @@ class FEA:
         mass_per_node = 1
         M = sps.eye(self.size_K_ff, format='csc')*mass_per_node
         M_inv = sps.linalg.inv(M)
-        self.dampening_per_node = 50.
+        self.dampening_per_node = 0.03
         dampening = sps.eye(self.size_K_ff, format='csc')*self.dampening_per_node
         # A_10 = -spsolve(M, self.K_ff)
         A_10 = -M_inv.dot(self.K_ff)
@@ -345,6 +413,7 @@ class FEA:
         
         self.x = x
         self.rigid_body_disp = np.zeros((self.num_dimensions,1))
+        self.rigid_body_origin = np.array([0.25, 0.05])
 
         u = np.zeros_like(self.F_f.todense())
         u = sps.csc_matrix(u)
@@ -421,6 +490,10 @@ class FEA:
             self.x = np.hstack((self.x, x_t))
 
             rigid_body_displacement = self.reshaped_Ff.sum(0).T * (delta_t**2)/2
+            # get displalcement vector
+            # cross displacement vector with force vector
+            # integrate across time
+            # rigid_body_rotation = self.
             self.rigid_body_disp = np.hstack((self.rigid_body_disp, rigid_body_displacement))
 
             # all of the time steps can be built, and then all of the matrix exponentials can be calculated in parallel
@@ -436,7 +509,7 @@ class FEA:
     '''
     Plots the solution.
     '''
-    def plot_displacements(self):
+    def plot_displacements(self, show=True):
         nodes = self.mesh.nodes
         U_reshaped = self.U.reshape((self.num_nodes, -1))
         max_x_dist = np.linalg.norm(max(nodes[:,0]) - min(nodes[:,0]))
@@ -452,22 +525,27 @@ class FEA:
         if len(nodes.shape) == 2:
             plt.plot(nodes[:,0], nodes[:,1], 'ko')
             plt.plot(deformed_nodes[:,0], deformed_nodes[:,1], 'r*')
-            # for i in range(self.num_nodes):
-            #     connections_indices = self.mesh.connections[i]
-            #     j = 0
-            #     for index in connections_indices:
-            #         this_node = nodes[i]
-            #         other_node = nodes[index]
-            #         plt.plot([this_node[0], other_node[0]], [this_node[1], other_node[1]], '--k')
-            #         this_deformed_node = deformed_nodes[i]  # I don't understand why the deformed come out as 2d arrays
-            #         other_deformed_node = deformed_nodes[index].reshape(deformed_nodes.shape[1])
-            #         plt.plot([this_deformed_node[0, 0], other_deformed_node[0, 0]] , [this_deformed_node[0, 1], other_deformed_node[0, 1]], '--r')
+            for start_node_index in self.node_connectivity.keys():
+                for end_node_index in self.node_connectivity[start_node_index]:
+                    if end_node_index <= start_node_index:
+                        continue
+                    
+                    start_node = nodes[start_node_index]
+                    end_node = nodes[end_node_index]
+                    plt.plot([start_node[0], end_node[0]], [start_node[1], end_node[1]], '--k')
+                    start_deformed_node_x = deformed_nodes[start_node_index,0]
+                    start_deformed_node_y = deformed_nodes[start_node_index,1]
+                    end_deformed_node_x = deformed_nodes[end_node_index,0]
+                    end_deformed_node_y = deformed_nodes[end_node_index,1]
+                    plt.plot([start_deformed_node_x, end_deformed_node_x], [start_deformed_node_y, end_deformed_node_y], '--r')
+
 
             plt.title(f'Scaled Discplacements (x{visualization_scaling_factor}) with {self.num_elements} Elements')
             plt.xlabel('x1 (m)')
             plt.ylabel('x2 (m)')
             plt.legend(('Initial Structure', 'Deformed Structure'))
-            plt.show()
+            if show:
+                plt.show()
         else:
             print("WARNING: Plotting not set up for anything other than 2d right now.")
 
@@ -493,6 +571,19 @@ class FEA:
             U_reshaped_plot = self.U_per_dim_per_time[:,:,i]
             deformed_nodes = nodes + U_reshaped_plot*visualization_scaling_factor
             plt.plot(deformed_nodes[:,0], deformed_nodes[:,1], 'r*')
+
+            # for start_node_index in self.node_connectivity.keys():
+            #     for end_node_index in self.node_connectivity[start_node_index]:
+            #         if end_node_index <= start_node_index:
+            #             continue
+                    
+            #         start_deformed_node_x = deformed_nodes[start_node_index,0]
+            #         start_deformed_node_y = deformed_nodes[start_node_index,1]
+            #         end_deformed_node_x = deformed_nodes[end_node_index,0]
+            #         end_deformed_node_y = deformed_nodes[end_node_index,1]
+            #         plt.plot([start_deformed_node_x, end_deformed_node_x], [start_deformed_node_y, end_deformed_node_y], '--r')
+
+
             plt.title(f'Displacement at t={t: 9.5f}')
             plt.xlabel(f'x (m*{visualization_scaling_factor})')
             plt.ylabel(f'y (m*{visualization_scaling_factor})')
@@ -523,8 +614,28 @@ class FEA:
     '''
     def calc_stresses(self):
         self.stresses = self.stress_map.dot(self.U)
-        self.stresses_per_point = self.stresses.reshape((-1,3))
+        self.stresses_dict = {}
+        self.stresses_dict['xx'] = self.stresses[np.ix_(self.stress_index_map['xx'])]
+        self.stresses_dict['yy'] = self.stresses[np.ix_(self.stress_index_map['yy'])]
+        self.stresses_dict['xy'] = self.stresses[np.ix_(self.stress_index_map['xy'])]
+        self.stresses_dict['axial'] = self.stresses[np.ix_(self.stress_index_map['axial'])]
 
+        nodes = self.mesh.nodes
+        U_reshaped = self.U.reshape((self.num_nodes, -1))
+        max_x_dist = np.linalg.norm(max(nodes[:,0]) - min(nodes[:,0]))
+        max_y_dist = np.linalg.norm(max(nodes[:,1]) - min(nodes[:,1]))
+        scale_dist = np.linalg.norm(np.array([max_x_dist, max_y_dist]))
+        if np.linalg.norm(self.U) != 0:
+            visualization_scaling_factor = scale_dist*0.1/max(np.linalg.norm(U_reshaped, axis=1))
+        else:
+            visualization_scaling_factor = 0
+        deformed_nodes = nodes + U_reshaped*visualization_scaling_factor
+        self.stress_eval_points = self.stress_eval_points_map.dot(deformed_nodes)
+        self.stress_eval_points_dict = {}
+        self.stress_eval_points_dict['xx'] = self.stress_eval_points[np.ix_(self.stress_eval_points_indices['xx'])]
+        self.stress_eval_points_dict['yy'] = self.stress_eval_points[np.ix_(self.stress_eval_points_indices['yy'])]
+        self.stress_eval_points_dict['xy'] = self.stress_eval_points[np.ix_(self.stress_eval_points_indices['xy'])]
+        self.stress_eval_points_dict['axial'] = self.stress_eval_points[np.ix_(self.stress_eval_points_indices['axial'])]
     
     def calc_dynamic_stresses(self):
         print(self.stress_map.shape)
@@ -537,24 +648,37 @@ class FEA:
 
     def plot_stresses(self, stress_type):
         if stress_type == 'x' or stress_type == 'xx':
-            stress_index = 0
-        elif  stress_type == 'y' or stress_type == 'yy':
-            stress_index = 1
-        elif  stress_type == 'tao' or stress_type == 'xy':
-            stress_index = 2
+            stresses = self.stresses_dict['xx']
+            stress_eval_points = self.stress_eval_points_dict['xx']
+        elif stress_type == 'y' or stress_type == 'yy':
+            stresses = self.stresses_dict['yy']
+            stress_eval_points = self.stress_eval_points_dict['yy']
+        elif stress_type == 'tao' or stress_type == 'xy':
+            stresses = self.stresses_dict['xy']
+            stress_eval_points = self.stress_eval_points_dict['xy']
+        elif stress_type == 'axial' or stress_type == 'tension' or stress_type == 'compression' or stress_type == '11':
+            stresses = self.stresses_dict['axial']
+            stress_eval_points = self.stress_eval_points_dict['axial']
+
+        # Added unnecessary section because can't get 1D vector from sps output.
+        stresses_plot = np.zeros(stresses.shape[0])
+        stress_eval_points_plot = np.zeros(stress_eval_points.shape)
+        for i in range(len(stresses_plot)):
+            stresses_plot[i] = stresses[i]
+            stress_eval_points_plot[i,:] = stress_eval_points[i,:]
+        # end unnecessary section
+
 
         plt.figure()
-        stresses_per_integration_point = self.stresses.reshape((-1,3))
-        plot_stresses = []
-        for i in range(stresses_per_integration_point.shape[0]):
-            plot_stresses.append(stresses_per_integration_point[i,stress_index])
-        plt.scatter(self.integration_coordinates[:,0], self.integration_coordinates[:,1], c=plot_stresses)
+        self.plot_displacements(show=False)
+        plt.scatter(stress_eval_points_plot[:,0], stress_eval_points_plot[:,1], c=stresses_plot, cmap='bwr')
 
         plt.title(f'Stress (sigma_{stress_type}) Color Plot with {self.num_elements} Elements')
         plt.xlabel('x1 (m)')
         plt.ylabel('x2 (m)')
         plt.colorbar()
         plt.show()
+
 
     def plot_dynamic_stresses(self, stress_type, time_step=None, dof=None):
         if stress_type == 'x' or stress_type == 'xx':
