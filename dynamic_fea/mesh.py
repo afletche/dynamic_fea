@@ -63,6 +63,26 @@ class UnstructuredMesh(Mesh):
             element_dofs = self.nodes_to_dof_indices(element.node_map)
             self.K[np.ix_(element_dofs, element_dofs)] += K_element
 
+
+    # '''
+    # Assembles a map that will individually calculate the strain energy in each element.
+    # '''
+    # def assemble_strain_energy_per_element_map(self):
+    #     # for each element, stack the element stiffness matrix
+    #     # in order to calculate a vector of strain energies (one for each element)/
+    #     element_number = 0
+    #     for element in self.elements:
+    #         K_element = element.K
+    #         element_dofs = self.nodes_to_dof_indices(element.node_map)
+    #         row_indices = element_dofs + element_number*self.num_total_dof
+    #         self.strain_energy_per_element_map[np.ix_(row_indices, element_dofs)] = K_element
+    #         self.strain_energy_per_element_map[np.ix_(row_indices, element_dofs)] = K_element/element.volume
+    #         element_number += 1
+    #     self.strain_energy_per_element_map.tocsc()
+    #     self.strain_energy_density_per_element_map.tocsc()
+
+
+
     '''
     Assembles the connectivity (mostly for plotting).
     '''
@@ -80,6 +100,8 @@ class UnstructuredMesh(Mesh):
     '''
     def initialize_ode(self):
         self.K = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+        # self.strain_energy_per_element_map = sps.lil_matrix((self.num_total_dof*self.num_elements, self.num_total_dof))
+        # self.strain_energy_density_per_element_map = sps.lil_matrix((self.num_total_dof*self.num_elements, self.num_total_dof))
 
 
     def setup(self):
@@ -88,3 +110,4 @@ class UnstructuredMesh(Mesh):
 
         self.assemble_k()
         self.assemble_connectivity()
+        # self.assemble_strain_energy_per_element_map()

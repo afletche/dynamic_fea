@@ -28,6 +28,7 @@ thickness = 0.1
 
 ''' Inputs '''
 NODES_PER_LENGTH = 50.
+# NODES_PER_LENGTH = 30.
 # NODES_PER_LENGTH = 5. BAD
 
 
@@ -73,11 +74,12 @@ geo.evaluate()
 
 mesh_nodes = cantilever_pointset.physical_coordinates.reshape(cantilever_pointset.shape)
 
-# Plot mesh
+# # Plot mesh
 # vp = Plotter(axes=1)
 # nodes1 = Points(mesh_nodes.reshape((-1,3)), r = 7, c = 'plum').legend('mesh')
 # vp.show(nodes1, 'Mesh', at=0, viewup="z", interactive = True)
 
+plane_stress_or_plane_strain = 'strain'
 elements = []
 for u in range(mesh_nodes.shape[0]-1):
     for v in range(mesh_nodes.shape[1]-1):
@@ -93,7 +95,7 @@ for u in range(mesh_nodes.shape[0]-1):
         node_11_index = (u+1)*mesh_nodes.shape[1] + (v+1)
         node_map = np.array([node_00_index, node_01_index, node_10_index, node_11_index])
 
-        elements.append(QuadElement(nodes, node_map, nylon, thickness))
+        elements.append(QuadElement(plane_stress_or_plane_strain, nodes, node_map, nylon, thickness))
 
 mesh = UnstructuredMesh(name='cantilever_mesh', nodes=cantilever_pointset.physical_coordinates[:,:2], elements=elements)
 
@@ -193,13 +195,14 @@ print('bc_nodes', bc_node_indices)
 # load_cases.append(cantilever_prob_loads)
 
 t0 = 0.
-tf = 1.
-nt = (tf-t0)*1000
+tf = 0.025
+nt = (tf-t0)*1000 # To see displacement
+# nt = (tf-t0)*100000      # to see stresses (time step must be small too)
 t_eval = np.linspace(t0, tf, nt+1)
 load_cases = []
 dynamic_loads = []
-input_loads = [[np.array([0., 1.e2]), np.array([0., 0.e1]), np.array([0., 1.e2]), np.array([0., 0.e1])],
-                [np.array([0., 1.e2]), np.array([0., 0.e1]), np.array([0., 1.e2]), np.array([0., 0.e1])]]
+input_loads = [[np.array([0., 1.e2]), np.array([0., 0.e1]), np.array([0., 1.e2]), np.array([0., 3.e2])],
+                [np.array([0., 1.e2]), np.array([0., 0.e1]), np.array([0., 1.e2]), np.array([0., 3.e2])]]
 t_loads = [0., tf/4, tf/2, tf*3/4]
 num_loads = len(input_loads)
 for i, t in enumerate(t_loads):
@@ -250,11 +253,14 @@ for i, load_case in enumerate(load_cases):
     cantilever_prob.evaluate_dynamics(loads=load_case, t_eval=t_eval)
     U_reshaped = cantilever_prob.U_per_dim_per_time
 
-    stresses = cantilever_prob.calc_dynamic_stresses()
-    cantilever_prob.plot_dynamic_stresses('xx', time_step=-1)
-    cantilever_prob.plot_dynamic_stresses('yy', time_step=-1)
-    cantilever_prob.plot_dynamic_stresses('xy', time_step=-1)
-    cantilever_prob.plot_dynamic_stresses('yy', dof=-1)
+    stresses = cantilever_prob.evaluate_dynamic_stresses()
+    # cantilever_prob.plot(stress_type='xx', time_step=-1)
+    # cantilever_prob.plot(stress_type='yy', time_step=-1)
+    # cantilever_prob.plot(stress_type='xy', time_step=-1)
+    # cantilever_prob.plot(stress_type='yy', dof=-1)
+    # cantilever_prob.plot(dof=[-1, -3], show_dislpacements=True)
+    # cantilever_prob.plot(dof=[-1, -3], show_dislpacements=True, stress_type='yy')
+    cantilever_prob.plot(show_dislpacements=True, show_connections=True, stress_type='xx', video_file_name='displacement_animation.avi', video_fps=20, show=False)
 
     # print('___Displacements___')
     # print(cantilever_prob.U)
@@ -270,17 +276,7 @@ for i, load_case in enumerate(load_cases):
     # print('min sigma_xy: ', min(cantilever_prob.stresses[:,:,2].reshape((-1,))))
 
 
-plt.plot(t_eval, cantilever_prob.U[-1, :], '-r', label='Upper right node')
-plt.plot(t_eval, cantilever_prob.U[-3, :], '-b', label='Node below upper right node')
-
-plt.title(f'Y-Displacement of Adjacent Nodes')
-plt.xlabel('t (s)')
-plt.ylabel('Displacement (m)')
-plt.legend()
-plt.show()
-
-
 # plt.plot(t, cantilever_prob.rigid_body_disp[1,:].reshape((-1,)), '-bo')
 # plt.show()
 
-cantilever_prob.plot_dynamics(show_plots=False, video_file_name='displacement_animation.avi', fps=20)
+# cantilever_prob.plot_dynamics(show_plots=False, video_file_name='displacement_animation.avi', fps=20)

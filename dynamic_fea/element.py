@@ -39,8 +39,9 @@ The class for a quad element. Currently only set up for 4 node quads.
 class QuadElement(Element):
     
     
-    def __init__(self, nodes, node_map, material, thickness) -> None:
+    def __init__(self, plane_strain_or_stress, nodes, node_map, material, thickness) -> None:
         super().__init__(nodes, node_map, material)
+        self.plane_strain_or_stress = plane_strain_or_stress
         self.thickness = thickness
 
         """ list node connectivity"""
@@ -60,7 +61,12 @@ class QuadElement(Element):
     '''
     def calc_k(self):
         def calc_k_integrand(zeta, eta):
-            self.E_local = self.calc_e_local_plane_strain()
+            if self.plane_strain_or_stress == 'strain':
+                self.E_local = self.calc_e_local_plane_strain()
+            elif self.plane_strain_or_stress == 'stress':
+                self.E_local = self.calc_e_local_plane_stress()
+            else:
+                Warning("Please input 'strain' or 'stress' for the plane_strain_or_stress")
             self.pn_ppara = self.calc_jacobian_parametric_to_shape(zeta, eta)
             self.J = self.calc_j(self.pn_ppara)
             self.B = self.calc_b(self.J, self.pn_ppara)
@@ -68,9 +74,8 @@ class QuadElement(Element):
             integrand = np.dot(self.B.T, np.dot(self.E_local, np.dot(self.B, self.det_J)))
             return integrand
 
-        K = self.thickness*self.second_order_double_integral_gauss_quadrature(calc_k_integrand)
-        self.K = K
-        return K
+        self.K = self.thickness*self.second_order_double_integral_gauss_quadrature(calc_k_integrand)
+        return self.K
 
 
     '''
@@ -79,6 +84,7 @@ class QuadElement(Element):
     def second_order_double_integral_gauss_quadrature(self, integrand):
         oor3 = 1/np.sqrt(3)
         # TODO Can make this into an element (parent) method that uses the child element attribute for parametric coordinates and weights.
+        # -- clarififcation: element (parent) as in the base element class.
         value = integrand(oor3, oor3) + integrand(-oor3, oor3) + integrand(oor3, -oor3) + integrand(-oor3, -oor3)
         return value
 
@@ -90,6 +96,18 @@ class QuadElement(Element):
         E = self.material.E
         nu = self.material.nu
         E_local = E/((1+nu)*(1-2*nu))*np.array([[1-nu, nu, 0], [nu, 1-nu, 0], [0, 0, (1-2*nu)/2]])
+        self.E_local = E_local
+        return E_local
+
+    '''
+    Calculates the local E matrix of an element in plane stress.
+    '''
+    def calc_e_local_plane_stress(self):
+        E = self.material.E
+        nu = self.material.nu
+        E_local = E/(1 - nu**2)*np.array([[1, nu, 0],
+                                          [nu, 1, 0],
+                                          [0, 0, (1-nu)/2]])
         self.E_local = E_local
         return E_local
 
@@ -120,11 +138,10 @@ class QuadElement(Element):
             B[1,i*2+1] = pn_pcart[1,i]
             B[2,i*2] = pn_pcart[1,i]
             B[2,i*2+1] = pn_pcart[0,i]
-        self.B = B
         return B
 
     
-    def calc_jacobian_parametric_to_shape(self, eta, zeta):
+    def calc_jacobian_parametric_to_shape(self, zeta, eta):
         dn1_dzeta = self.evaluate_dn_dzeta_1(eta)
         dn2_dzeta = self.evaluate_dn_dzeta_2(eta)
         dn3_dzeta = self.evaluate_dn_dzeta_3(eta)
@@ -141,26 +158,29 @@ class QuadElement(Element):
 
         return pn_ppara
 
-    def evaluate_integration_coordinates(self):
-        nodes_x = self.nodes[:,0]
-        nodes_y = self.nodes[:,1]
+    # def evaluate_integration_coordinates(self):
+    #     nodes_x = self.nodes[:,0]
+    #     nodes_y = self.nodes[:,1]
 
-        self.integration_coordinates = np.zeros((4,2))
-        for i in range(4):
-            zeta = self.parametric_integration_coordinates[i, 0]
-            eta = self.parametric_integration_coordinates[i, 1]
-            shape_funcs = np.array([
-                self.evaluate_n_1(zeta, eta),
-                self.evaluate_n_2(zeta, eta),
-                self.evaluate_n_3(zeta, eta),
-                self.evaluate_n_4(zeta, eta)
-            ])
+    #     self.integration_coordinates = np.zeros((4,2))
+    #     for i in range(4):
+    #         zeta = self.parametric_integration_coordinates[i, 0]
+    #         eta = self.parametric_integration_coordinates[i, 1]
+    #         shape_funcs = np.array([
+    #             self.evaluate_n_1(zeta, eta),
+    #             self.evaluate_n_2(zeta, eta),
+    #             self.evaluate_n_3(zeta, eta),
+    #             self.evaluate_n_4(zeta, eta)
+    #         ])
 
-            # TODO Pretty sure x, y, and potentially z can be done in one operation
-            x = np.dot(nodes_x, shape_funcs)
-            y = np.dot(nodes_y, shape_funcs)
-            self.integration_coordinates[i,:] = np.array([x, y])
+    #         # TODO Pretty sure x, y, and potentially z can be done in one operation
+    #         x = np.dot(nodes_x, shape_funcs)
+    #         y = np.dot(nodes_y, shape_funcs)
+    #         self.integration_coordinates[i,:] = np.array([x, y])
 
+    '''
+    Assembles the map for evaluating the gauss-quadrature integration points.
+    '''
     def assemble_integration_coordinates_map(self):
         self.integration_coordinates_map = np.array([
             self.evaluate_n_1(self.parametric_integration_coordinates),
@@ -168,15 +188,43 @@ class QuadElement(Element):
             self.evaluate_n_3(self.parametric_integration_coordinates),
             self.evaluate_n_4(self.parametric_integration_coordinates)
         ]).T
+
         return self.integration_coordinates_map
 
+    '''
+    Evaluates the gauss-quadrature integration points.
+    '''
     def evaluate_integration_coordinates(self, U=None):
         if U is None:
-            U = np.zeros(like=self.nodes, dtype=float)
+            U = np.zeros_like(self.nodes, dtype=float)
+        if U.shape[1] == 1:
+            U = U.reshape(self.nodes.shape)
         deformed_nodes = self.nodes + U
         self.integration_coordinates = np.dot(self.integration_coordinates_map, deformed_nodes)
         return self.integration_coordinates
 
+    
+    ''' 
+    Calculates the element midpoint.
+    '''
+    def calc_midpoint(self, U=None):
+        if U is None:
+            U = np.zeros_like(self.nodes, dtype=float)
+        if U.shape[1] == 1:
+            U = U.reshape(self.nodes.shape)
+
+        deformed_nodes = self.nodes + U
+
+        zeta_eta = np.array([[0., 0.]]) # midpoint
+        shape_funcs = np.array([
+            self.evaluate_n_1(zeta_eta),
+            self.evaluate_n_2(zeta_eta),
+            self.evaluate_n_3(zeta_eta),
+            self.evaluate_n_4(zeta_eta)
+        ]).T
+
+        self.midpoint = shape_funcs.dot(deformed_nodes)
+        return self.midpoint
 
 
     def evaluate_n_1(self, zeta_eta):
@@ -234,6 +282,30 @@ class QuadElement(Element):
 
 
     '''
+    Calculates the element area.    
+    '''
+    def calc_area(self):
+        u_vector = self.nodes[2] - self.nodes[0]
+        v_vector = self.nodes[1] - self.nodes[0]
+        element_area_00_bias = np.linalg.norm(np.cross(u_vector, v_vector))
+        u_vector = self.nodes[1] - self.nodes[3]
+        v_vector = self.nodes[2] - self.nodes[3]
+        element_area_11_bias = np.linalg.norm(np.cross(u_vector, v_vector))
+        self.area = (element_area_00_bias + element_area_11_bias)/2
+        return self.area
+
+
+    '''
+    Calculates the element volume.
+    '''
+    def calc_volume(self):
+        area = self.calc_area()
+        self.volume = area*self.thickness
+        return self.volume
+
+    
+
+    '''
     Assembles the stress calculation map
     '''
     def assemble_stress_map(self):
@@ -242,31 +314,18 @@ class QuadElement(Element):
         # integration points of this element TODO generalize for non-4-node quads!!?
         zeta_eta = self.parametric_integration_coordinates
 
-        E_local = self.E_local
-
-        # for j in range(len(zeta_eta)):
-        #     pn_ppara = self.calc_jacobian_parametric_to_shape(zeta_eta[j][0], zeta_eta[j][1])
-        #     J = self.calc_j(pn_ppara)
-        #     if j == 0:
-        #         B_local = self.calc_b(J, pn_ppara)
-        #     else:
-        #         B_local = np.vstack(B_local, self.calc_b(J, pn_ppara))
-
-        B_stresses = self.calc_B_stresses()
-        # E_local_stacked = matlib.repmat(E_local, 4, 1)
+        B_stresses = self.calc_stresses_B_mat()
         E_stresses = np.kron(np.eye(num_int_points), self.E_local)
 
         self.stress_map = np.dot(E_stresses, B_stresses)
 
-            # stresses[j,:] = np.dot(E_local, np.dot(B_local, U)).reshape((num_stresses,))
-        # self.stresses = stresses
         return self.stress_map
 
 
     '''
     Calculates the B matrix for the stress calculation map.
     '''
-    def calc_B_stresses(self):
+    def calc_stresses_B_mat(self):
         zeta_eta = self.parametric_integration_coordinates
 
         for j in range(len(zeta_eta)):
@@ -275,7 +334,7 @@ class QuadElement(Element):
             if j == 0:
                 B_local = self.calc_b(J, pn_ppara)
             else:
-                B_local = np.vstack((B_local, self.calc_b(J, pn_ppara)))    # TODO should be hstack?
+                B_local = np.vstack((B_local, self.calc_b(J, pn_ppara)))
                 
         return B_local
 
@@ -287,12 +346,35 @@ class QuadElement(Element):
         self.stresses = np.dot(self.stress_map, U).reshape((-1,3))
         return self.stresses
 
+
+    '''
+    Calculates the equivalent of F = K*x
+    '''
+    def calc_stiffness_force(self, U):
+        self.stiffness_force = np.dot(self.K, U)
+        return self.stiffness_force
+
+
+    '''
+    Calculates the strain energy of the element.
+    strain_energy = 1/2*U*K*U
+    '''
+    def calc_strain_energy(self, U):
+        self.strain_energy = U.T.dot(self.K.dot(U))/2
+        self.strain_energy_density = self.strain_energy/self.volume
+        return self.strain_energy, self.strain_energy_density
+
+
+    '''
+    Runs the setup for the element which consists of precomputing maps to be used for global maps.
+    '''
     def assemble(self):
         super().setup()
         self.calc_k()
         self.assemble_stress_map()
         self.assemble_integration_coordinates_map()
-        # self.evaluate_integration_coordinates()
+        self.calc_area()
+        self.calc_volume()
 
     
 class TriangleElement(Element):
@@ -311,7 +393,7 @@ class TrussElement(Element):
     
     def __init__(self, nodes, node_map, material, area) -> None:
         super().__init__(nodes, node_map, material)
-        self.A = area
+        self.area = area
 
         """ list node connectivity"""
         self.node_connectivity = {}
@@ -343,7 +425,7 @@ class TrussElement(Element):
         cs = c*s
         self.E = self.material.E
 
-        self.K = self.E*self.A/self.l*np.array([
+        self.K = self.E*self.area/self.l*np.array([
             [c2, cs, -c2, -cs],
             [cs, s2, -cs, -s2],
             [-c2, -cs, c2, cs],
@@ -353,18 +435,22 @@ class TrussElement(Element):
 
     
     def set_A(self, area):
-        self.A = area
+        self.area = area
 
     def set_nodes(self, nodes):
         self.nodes = nodes
 
+
+    def calc_volume(self):
+        self.volume = self.area*self.l
+        return self.volume
 
     '''
     Calculates the local load vector for self-weight.
     '''
     def calc_self_weight(self, g):
         rho = self.material.density
-        self.r_g_local = rho*self.A*g*self.l*np.array([0, -1/2, 0, -1/2]).reshape((-1,1))
+        self.r_g_local = rho*self.area*g*self.l*np.array([0, -1/2, 0, -1/2]).reshape((-1,1))
         return self.r_g_local
 
 
@@ -416,3 +502,4 @@ class TrussElement(Element):
         self.calc_k()
         self.assemble_stress_map()
         self.assemble_midpoint_map()
+        self.calc_volume()
