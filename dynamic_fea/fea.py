@@ -6,6 +6,7 @@ This class is for performing 2D structural FEA problems.
 '''
 
 
+from functools import total_ordering
 from pprint import pprint
 import numpy as np
 import numpy.matlib as npmatlib
@@ -371,39 +372,100 @@ class FEA:
     def setup_dynamics(self):
         self.setup()
         self.size_K_ff = self.K_ff.shape[0]
+        num_dislpacement_dofs = self.size_K_ff
+        num_dislpacement_states = 2*num_dislpacement_dofs
+        num_rigid_body_dofs = 3     # 2D
+        num_rigid_body_states = 2*num_rigid_body_dofs
+
+        # TODO Move this block out of here. Make it a problem input.
         mass_per_node = 1
         M = sps.eye(self.size_K_ff, format='csc')*mass_per_node
         M_inv = sps.linalg.inv(M)
-        self.dampening_per_node = 0.03
-        dampening = sps.eye(self.size_K_ff, format='csc')*self.dampening_per_node
+        self.dampening_per_node = 0.03      # TODO implement Proportional damping
+        displacement_dampening = sps.eye(num_dislpacement_dofs, format='csc')*self.dampening_per_node
+        total_mass = M.sum()
+        moment_of_inertia_zz = total_mass   # TODO update this.
 
+        num_states = num_dislpacement_states + num_rigid_body_states
+        num_inputs = self.size_K_ff
+
+        # Constructing displacement portion of A matrix
         A_10 = -M_inv.dot(self.K_ff)
-        A_11 = -M_inv.dot(dampening)
-        A = sps.lil_matrix((2*self.size_K_ff, 2*self.size_K_ff))
-        # A[:size_K_ff, :size_K_ff] = sps.zeros     # not necessary for sparse
-        A[:self.size_K_ff, self.size_K_ff:] = sps.eye(self.size_K_ff, format='csc')
-        A[self.size_K_ff:, :self.size_K_ff] = A_10
-        A[self.size_K_ff:, self.size_K_ff:] = A_11
+        A_11 = -M_inv.dot(displacement_dampening)
+        A = sps.lil_matrix((num_states, num_states))
+        A[:num_dislpacement_dofs, num_dislpacement_dofs:num_dislpacement_states] = sps.eye(self.size_K_ff, format='csc')
+        A[num_dislpacement_dofs:num_dislpacement_states, :num_dislpacement_dofs] = A_10
+        A[num_dislpacement_dofs:num_dislpacement_states, num_dislpacement_dofs:num_dislpacement_states] = A_11
+
+        test = A.todense()
+        print(test)
+        print(test[-8:,-8:])
+
+        # Constructing rigid body portion of A matrix. No RBD stiffness or damping for now. (drag could contribute damping)
+        # X direction state space
+        A_10 = -M_inv.dot(self.K_ff)
+        A_11 = -M_inv.dot(displacement_dampening)
+        A[num_dislpacement_states:num_dislpacement_states+1, num_dislpacement_states+1:num_dislpacement_states+2] = 1    # Identity of size one.
+        # A[num_dislpacement_dofs:num_dislpacement_states, :num_dislpacement_dofs] = A_10
+        # A[num_dislpacement_dofs:num_dislpacement_states, num_dislpacement_dofs:num_dislpacement_states] = A_11
+
+        test = A.todense()
+        print(test)
+        print(test[-8:,-8:])
+
+
+        # Y direction state space
+        A_10 = -M_inv.dot(self.K_ff)
+        A_11 = -M_inv.dot(displacement_dampening)
+        A[num_dislpacement_states+2:num_dislpacement_states+3, num_dislpacement_states+3:num_dislpacement_states+4] = 1    # Identity of size one.
+        # A[num_dislpacement_dofs:num_dislpacement_states, :num_dislpacement_dofs] = A_10
+        # A[num_dislpacement_dofs:num_dislpacement_states, num_dislpacement_dofs:num_dislpacement_states] = A_11
+
+        test = A.todense()
+        print(test)
+        print(test[-8:,-8:])
+
+
+        # Rotational (around Z) state space
+        A_10 = -M_inv.dot(self.K_ff)
+        A_11 = -M_inv.dot(displacement_dampening)
+        A[num_dislpacement_states+4:num_dislpacement_states+5, num_dislpacement_states+5:num_dislpacement_states+6] = 1    # Identity of size one.
+        # A[num_dislpacement_dofs:num_dislpacement_states, :num_dislpacement_dofs] = A_10
+        # A[num_dislpacement_dofs:num_dislpacement_states, num_dislpacement_dofs:num_dislpacement_states] = A_11
+
+        test = A.todense()
+        print(test)
+        print(test[-8:,-8:])
+
+
         A = A.tocsc()
+        test = A.todense()
+        print(test)
+        print(test[-4:,-4:])
         # print('Eigenvalues of A: ', sps.linalg.eigs(A))
         self.eigs = sps.linalg.eigs(A)
         self.A_inv = sps.linalg.inv(A)
         # print('inv A: ', sps.linalg.inv(A))   # made sure not singular.
         # print('det: ', np.linalg.det(A.todense()))
-        # A_inv = sps.linalg.inv(A)
-        # print('NORM: ', np.linalg.norm((A.dot(A_inv)).todense() - np.eye(A.shape[0])))
+        A_inv = sps.linalg.inv(A)
+        print('NORM: ', np.linalg.norm((A.dot(A_inv)).todense() - np.eye(A.shape[0])))
 
-        B = sps.lil_matrix((2*self.size_K_ff, self.size_K_ff))
-        B[self.size_K_ff:,:] = M_inv
+        B = sps.lil_matrix((num_states, num_inputs))
+        B[num_dislpacement_dofs:num_dislpacement_states,:] = M_inv
         B = B.tocsc()
 
-        C = sps.lil_matrix((self.size_K_ff, 2*self.size_K_ff))
-        C[:, :self.size_K_ff] = sps.eye(self.size_K_ff)
-        C = C.tocsc()
+        C_dislacements = sps.lil_matrix((num_dislpacement_dofs, num_states))
+        C_dislacements[:, :num_dislpacement_states] = sps.eye(num_dislpacement_dofs)
+        C_dislacements = C_dislacements.tocsc()
+
+        C_rigid_body_dofs = sps.lil_matrix((num_rigid_body_dofs, num_states))
+        C_rigid_body_dofs[:, num_dislpacement_states:(num_dislpacement_states+num_rigid_body_dofs)] = sps.eye(num_rigid_body_dofs)
+        C_rigid_body_dofs = C_rigid_body_dofs.tocsc()
 
         self.A = A
         self.B = B
-        self.C = C
+        self.C_dislacements = C_dislacements
+        self.C_rigid_body_dofs = C_rigid_body_dofs
 
 
     '''
@@ -500,8 +562,13 @@ class FEA:
             evaluated_dynamics[t] = x_t
             self.x = np.hstack((self.x, x_t))
 
-            rigid_body_displacement = self.reshaped_Ff.sum(0).T * (delta_t**2)/2
+            rigid_body_displacement = self.reshaped_Ff.sum(0).T * (delta_t**2)/2        # to account for initial velocity, add term here
+            
+            for i, load in enumerate(loads):
+                pass
+
             # get displalcement vector
+
             # cross displacement vector with force vector
             # integrate across time
             # rigid_body_rotation = self.
@@ -511,7 +578,7 @@ class FEA:
             # These matrix exponentials can then be plugged into equations to get all states in parallel.
 
         self.U = np.zeros((self.num_total_dof, self.nt+1))
-        self.U[self.free_dof,:] = self.C.dot(self.x)
+        self.U[self.free_dof,:] = self.C_dislacements.dot(self.x)
         self.U_per_time_step = self.U.reshape((-1, self.nt+1))
         self.U_per_time_step = np.moveaxis(self.U_per_time_step, -1, 0)
         self.U_per_dim_per_time = self.U.reshape((self.num_nodes, self.num_dimensions, self.nt+1))

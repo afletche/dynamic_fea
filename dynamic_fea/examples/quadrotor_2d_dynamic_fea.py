@@ -196,7 +196,7 @@ print('bc_nodes', bc_node_indices)
 
 t0 = 0.
 tf = 0.025
-nt = (tf-t0)*1000 # To see displacement
+nt = np.rint((tf-t0)*1000).astype(int) # To see displacement
 # nt = (tf-t0)*100000      # to see stresses (time step must be small too)
 t_eval = np.linspace(t0, tf, nt+1)
 load_cases = []
