@@ -20,8 +20,6 @@ import cv2
 import os
 
 from dynamic_fea.element import QuadElement, TrussElement
-from ufl import grad
-
 
 class FEA:
 
