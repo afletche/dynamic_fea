@@ -396,18 +396,18 @@ def evaluate_model_2a(x, rho=0.):
 
 
 # Run optimization
-hw5_optimization = OptimizationProblem()
-steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
-hw5_optimization.set_model(model=evaluate_model_2a)
-hw5_optimization.set_optimizer(steepest_descent_optimizer)
-hw5_optimization.setup()
-x0 = np.ones(len(elements),)*0.4
-steepest_descent_optimizer.set_initial_guess(x0)
-hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-3, updating_penalty=True, max_iter=500)
-solution = hw5_optimization.report(history=True)
-hw5_optimization.plot()
+# hw5_optimization = OptimizationProblem()
+# steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
+# hw5_optimization.set_model(model=evaluate_model_2a)
+# hw5_optimization.set_optimizer(steepest_descent_optimizer)
+# hw5_optimization.setup()
+# x0 = np.ones(len(elements),)*0.4
+# steepest_descent_optimizer.set_initial_guess(x0)
+# hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-3, updating_penalty=True, max_iter=500)
+# solution = hw5_optimization.report(history=True)
+# hw5_optimization.plot()
 
-hw5_prob.plot_topology(solution[0])
+# hw5_prob.plot_topology(solution[0])
 
 
 def evaluate_model_2b(x, rho=0.):
@@ -484,6 +484,19 @@ def evaluate_model_2b(x, rho=0.):
     model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
     return model_outputs
 
+
+hw5_optimization = OptimizationProblem()
+steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
+hw5_optimization.set_model(model=evaluate_model_2b)
+hw5_optimization.set_optimizer(steepest_descent_optimizer)
+hw5_optimization.setup()
+x0 = np.ones(len(elements),)*0.4
+steepest_descent_optimizer.set_initial_guess(x0)
+hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-4, updating_penalty=True, max_iter=200)
+solution = hw5_optimization.report(history=True)
+hw5_optimization.plot()
+
+hw5_prob.plot_topology(solution[0])
 
 '''
 # Run optimization
