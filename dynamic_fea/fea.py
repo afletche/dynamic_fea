@@ -7,7 +7,9 @@ This class is for performing 2D structural FEA problems.
 
 
 from functools import total_ordering
+from multiprocessing.dummy import connection
 from pprint import pprint
+from tkinter import Y
 import numpy as np
 import numpy.matlib as npmatlib
 import scipy.sparse as sps
@@ -18,6 +20,7 @@ import cv2
 import os
 
 from dynamic_fea.element import QuadElement, TrussElement
+from ufl import grad
 
 
 class FEA:
@@ -39,6 +42,8 @@ class FEA:
         self.apply_boundary_conditions(boundary_conditions)
 
         self.visualization_scaling_factor = 1.
+        self.use_self_weight = False
+        self.g = 9.81
 
 
 
@@ -138,8 +143,10 @@ class FEA:
                 load_component_dof = node*self.dimensions_spanned+i
                 if self.F[load_component_dof] != 0:
                     self.F[load_component_dof] = self.F[load_component_dof].data + force[i]
+                    self.F_body_fixed[load_component_dof] = self.F_body_fixed[load_component_dof].data + force[i]
                 else:
                     self.F[load_component_dof] = force[i]
+                    self.F_body_fixed[load_component_dof] = force[i]
 
 
     '''
@@ -148,18 +155,36 @@ class FEA:
     Inputs:
     - g : float : gravitational constant (9.81 for Earth)
     '''
-    def apply_self_weight(self, g):
-        # For each element, add its weight
-        for i in range(self.num_elements):
-            element = self.mesh.elements[i]
-            element.calc_l()
-            local_F_g = element.calc_self_weight(g)
-            element_dofs = self.nodes_to_dof_indices(element.node_map)
-            self.F[np.ix_(element_dofs)] += local_F_g
+    def apply_self_weight(self, g, rotation=0):
+        mass_matrix = self.M
+        odd_indices = np.arange(1, self.num_total_dof, 2)
+        mass_dof_array = mass_matrix[np.ix_(odd_indices, odd_indices)].diagonal()
+
+        self.F[odd_indices] -= (mass_dof_array*g).reshape((-1, 1))
+        self.F_earth_fixed[odd_indices] -= (mass_dof_array*g).reshape((-1, 1))
+
+
+        self.use_self_weight = True
+        self.g = g
+
+
+    '''
+    Adds a point mass to the structure.
+
+    Inputs:
+    - g : float : gravitational constant (9.81 for Earth)
+    - masses : List : list of Lists of locations_node and masses: [[node1, mass1],[node2, mass2],...]
+    '''
+    def add_point_masses(self, masses):
+        self.mesh.add_point_masses(masses)
+
 
 
     def reset_loads(self):
         self.F = sps.lil_matrix((self.num_total_dof, 1))
+        self.F_earth_fixed = sps.lil_matrix((self.num_total_dof, 1))
+        self.F_body_fixed = sps.lil_matrix((self.num_total_dof, 1))
+
 
 
     '''
@@ -168,7 +193,7 @@ class FEA:
     Inputs:
     - boundary_conditions : List : [(node1, axis1, displacement1), (node2, ...), ...]
     - nodes : np.ndarray (num_bc,): the nodes with the applied BCs
-    - axes  : np.ndarray (num_bc,): the corresponding axis that is prescribed at each node
+    - axis  : np.ndarray (num_bc,): the corresponding axis that is prescribed at each node
     - displacements : np.ndarray (num_bc,): the prescribed displacement for each dof
     '''
     def apply_boundary_conditions(self, boundary_conditions):
@@ -194,13 +219,12 @@ class FEA:
     Sets up the data structures for the ODE (preallocates).
     '''
     def initialize_ode(self):
-        # self.K = np.zeros((self.num_total_dof, self.num_total_dof))
-        # self.F = np.zeros((self.num_total_dof, 1))
-        # self.U = np.zeros((self.num_total_dof, 1))
-
         self.K = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
         self.F = sps.lil_matrix((self.num_total_dof, 1))
-        self.U = sps.lil_matrix((self.num_total_dof, 1))
+        self.F_earth_fixed = sps.lil_matrix((self.num_total_dof, 1))
+        self.F_body_fixed = sps.lil_matrix((self.num_total_dof, 1))
+        # self.U = sps.lil_matrix((self.num_total_dof, 1))
+        self.U = np.zeros((self.num_total_dof, 1))
 
         self.stress_maps = {}
         self.integration_coordinates = {}
@@ -232,6 +256,9 @@ class FEA:
     def assemble_k(self):
         # In the future, this could potentially loop over meshes, or perhaps do it's own assembly of something.
         self.K = self.mesh.K
+
+    def assemble_mass_matrix(self):
+        self.M = self.mesh.M
 
     '''
     Gets the DOF indices for the corresponding nodes.
@@ -325,15 +352,20 @@ class FEA:
         self.mesh.setup()
 
         self.assemble_k()
+        self.assemble_mass_matrix()
         self.assemble_connectivity()
         self.assemble_stress_map()
         # self.assemble_strain_energy_per_element_map()
         self.K = self.K.tocsc()
         self.F = self.F.tocsc()
+        self.F_earth_fixed = self.F_earth_fixed.tocsc()
+        self.F_body_fixed = self.F_body_fixed.tocsc()
         self.stress_map = self.stress_map.tocsc()      
 
         self.free_dof = np.setdiff1d(self.total_dof, self.prescribed_dof)   # all dof that are not prescribed are free
-        
+        self.num_free_dof = self.free_dof.size
+        self.num_prescribed_dof = self.prescribed_dof.size
+
         self.K_ff = self.K[np.ix_(self.free_dof, self.free_dof)]
         self.K_fp = self.K[np.ix_(self.free_dof, self.prescribed_dof)]
         self.K_pf = self.K_fp.T
@@ -359,113 +391,362 @@ class FEA:
         self.U_f = spsolve(a, b)
         self.F_p = self.K_pf.dot(self.U_f).reshape((self.K_pf.shape[0], 1)) + self.K_pp.dot(self.U_p)
 
-        self.U[self.free_dof] = self.U_f
+        self.U[self.free_dof] = self.U_f.reshape((-1, 1))
         # self.U[self.prescribed_dof] = self.U_p    # known already
-        self.U = self.U.todense()
+        # self.U = self.U.todense()                 # changed self.U to just be a numpy array initially 
+        self.U = self.U.reshape((-1, self.nt+1))
 
         # self.F[self.free_dof] = self.F_f          # known already
         self.F[self.prescribed_dof] = self.F_p
 
         self.U_per_dim_per_time = self.U.reshape((self.nt+1, self.num_nodes, self.num_dimensions))
 
+
+    '''
+    Apply topology densities
+    '''
+    def evaluate_topology(self, x, simp_penalization_factor=3, ramp_penalization_factor=None, filter_radius=None):
+        self.mesh.evaluate_topology(x, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
+        self.assemble_k()
+        self.K_ff = self.K[np.ix_(self.free_dof, self.free_dof)]
+        self.K_fp = self.K[np.ix_(self.free_dof, self.prescribed_dof)]
+        self.K_pf = self.K_fp.T
+        self.K_pp = self.K[np.ix_(self.prescribed_dof, self.prescribed_dof)]
+
+
+    '''
+    NOTE: This is hardcoded to take in density inputs for topology optimization.
+    Objective: Weight
+    Constraints:
+        - Stress
+        - Strain energy
+    '''
+    # def evaluate(self, x, rho=0.):
+    #     # weight = np.sum(abs(x))
+    #     weight = x.dot(x)
+
+    #     self.mesh.evaluate_topology(x, penalization_type='SIMP')
+    #     self.assemble_k()
+    #     self.assemble_mass_matrix()
+    #     self.K_ff = self.K[np.ix_(self.free_dof, self.free_dof)]
+    #     self.K_fp = self.K[np.ix_(self.free_dof, self.prescribed_dof)]
+    #     self.K_pf = self.K_fp.T
+    #     self.K_pp = self.K[np.ix_(self.prescribed_dof, self.prescribed_dof)]
+    #     self.F_f = self.F[self.free_dof]
+    #     self.F_p = self.F[self.prescribed_dof]    # don't know yet
+    #     self.assemble_stress_map()
+
+    #     self.evaluate_static()
+    #     self.evaluate_stresses()
+    #     self.evaluate_strain_energy()
+    #     # self.plot(stress_type='avm', time_step=0)
+    #     odd_indices = np.arange(1, self.num_total_dof, 2)
+    #     self.total_mass = self.M[np.ix_(odd_indices, odd_indices)].sum()
+
+    #     # print('displacement: ', self.U)
+    #     # print('K', self.K)
+    #     # print('strain energy', self.strain_energy)
+        
+    #     sigma_yield = self.mesh.material.sigma_y
+    #     avm_stress_constraint = (self.averaged_von_mises_stresses/sigma_yield - 1).reshape((-1,))
+    #     avm_stress_penalty_scaling_factors = np.ones_like(avm_stress_constraint)*1e-0
+    #     # print('von mises', np.max(self.averaged_von_mises_stresses))
+
+    #     max_strain_energy = 0.8418*self.total_mass**4 - 1.644*self.total_mass**3 + 1.244*self.total_mass**2 - 0.313*self.total_mass + 0.02661
+    #     strain_energy_constraint = self.strain_energy - max_strain_energy
+    #     # print('strain energy constraint: ', strain_energy_constraint)
+    #     strain_energy_penalty_scaling_factor = 1.
+
+    #     # print('constraint', avm_stress_constraint)
+
+    #     constraint_vector = np.array([])
+    #     constraint_vector = np.append(constraint_vector, avm_stress_constraint)
+    #     constraint_vector = np.append(constraint_vector, strain_energy_constraint)
+    #     penalty_scaling_factors_vector = np.array([])
+    #     penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factors)
+    #     penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, strain_energy_penalty_scaling_factor)
+
+    #     active_contraints = constraint_vector[constraint_vector > 0]
+    #     active_penalty_scaling_factors = penalty_scaling_factors_vector[constraint_vector > 0]
+    #     active_penalty_scaling_matrix = np.diag(active_penalty_scaling_factors)
+
+    #     # print('active penalty', active_penalty_scaling_factors)
+
+    #     if active_contraints.size == 0:
+    #         f = weight
+    #     else:
+    #         f = weight + 1/2*(active_contraints.T).dot(active_penalty_scaling_matrix).dot(active_contraints)
+    #         # print('weight', weight)
+    #         # print('penalty', 1/2*(active_contraints.T).dot(active_penalty_scaling_matrix).dot(active_contraints))
+    #     c = np.array([])
+    #     # df_dx = self.evaluate_gradient(x=x, rho=rho)
+    #     df_dx = None
+    #     self.h = 1e-8
+    #     dc_dx = dc_dx = np.array([])
+    #     d2f_dx2 = None
+    #     dl_dx = None
+    #     kkt = None
+
+    #     model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
+    #     return model_outputs
+
+    # def evaluate_gradient(self, x, rho=0.):
+    #     # lambda_p = zeros
+    #     adjoint_term = sps.lil_matrix((1,self.num_total_dof))
+    #     L = sps.lil_matrix((self.num_total_dof,1))
+    #     # output_dof = self.prescribed_dof[-3:]
+    #     output_dof = self.prescribed_dof[-1]
+    #     L[output_dof] = -1/100
+    #     L_f = L[np.ix_(self.free_dof)]
+    #     L_f = L_f.tocsc()
+    #     adjoint_term_f = spsolve(self.K_ff, -L_f)
+    #     adjoint_term[:,np.ix_(self.free_dof)] = adjoint_term_f
+
+    #     mass_map = np.zeros((self.num_elements,))
+    #     pR_parea = sps.lil_matrix((self.num_total_dof, self.num_elements))
+    #     for i, element in enumerate(self.mesh.elements):
+    #         K = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+    #         element_sensitivity = element.K/element.area
+    #         element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
+    #         K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+    #         K = K.tocsc()
+    #         pR_parea[:, i] = K.dot(-self.U)
+
+    #         mass_map[i] = element.l*element.material.density
+    #     pR_parea = pR_parea.tocsc()
+
+    #     # additional term from penalty
+    #     total_mass = mass_map.dot(x)
+    #     pf_pa = rho*(self.initial_mass - total_mass)*-mass_map
+        
+    #     df_dt = adjoint_term.dot(pR_parea).todense() + pf_pa
+    #     gradient = np.zeros((self.num_elements))
+    #     for i in range(len(gradient)):
+    #         gradient[i] = df_dt[0,i]
+    #     # gradient = df_dt.reshape((-1,))
+    #     # print(gradient)
+    #     return gradient
+
+    '''
+    Evaluation function for compliant mechanism topopology optimization.
+    '''
+    def evaluate(self, x, rho=0.):
+        densities_too_high = x > 1
+        x[densities_too_high] = 1.
+        densities_too_low = x < 1.e-3
+        x[densities_too_low] = 1.e-3
+
+
+        self.mesh.evaluate_topology(x, penalization_type='SIMP')
+        self.assemble_k()
+        self.K_ff = self.K[np.ix_(self.free_dof, self.free_dof)]
+        self.K_fp = self.K[np.ix_(self.free_dof, self.prescribed_dof)]
+        self.K_pf = self.K_fp.T
+        self.K_pp = self.K[np.ix_(self.prescribed_dof, self.prescribed_dof)]
+
+        self.evaluate_static()
+        # self.plot(time_step=0, show_dislpacements=True, show_connections=True)
+        self.evaluate_stresses()
+
+        # self.plot(stress_type='vm')
+        # self.plot(stress_type='avm')
+        
+        # self.plot_topology(x)
+        SF = 2.
+        sigma_yield = self.mesh.material.sigma_y/SF
+        avm_stress_constraint = (self.averaged_von_mises_stresses/sigma_yield - 1).reshape((-1,))
+        avm_stress_penalty_scaling_factors = np.ones_like(avm_stress_constraint)*1e-0
+        # print('von mises', np.max(self.averaged_von_mises_stresses))
+
+        constraint_vector = np.array([])
+        constraint_vector = np.append(constraint_vector, avm_stress_constraint)
+        penalty_scaling_factors_vector = np.array([])
+        penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factors)
+
+        active_contraints = constraint_vector[constraint_vector > 0]
+        active_penalty_scaling_factors = penalty_scaling_factors_vector[constraint_vector > 0]
+        active_penalty_scaling_matrix = np.diag(active_penalty_scaling_factors)
+
+        # print('active penalty', active_penalty_scaling_factors)
+
+        L = np.zeros((self.F_p.shape[0]))
+        L[-14:] = 1.
+        # L[-1:] = 1.
+        # f = -self.F_p[-1]
+        f = L.dot(self.F_p)
+        # if active_contraints.size != 0:
+        #     f += 1/2*(active_contraints.T).dot(active_penalty_scaling_matrix).dot(active_contraints)
+
+        c = np.array([])
+        df_dx = self.evaluate_gradient(x=x, rho=rho)
+        # df_dx = None
+        self.h = 1e-2
+        dc_dx = dc_dx = np.array([])
+        d2f_dx2 = None
+        dl_dx = None
+        kkt = None
+
+        model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
+        return model_outputs
+
+
+    '''
+    NOTE: As with evaluate, this is hard coded for the compliant mechanism optimization.
+    '''
+    def evaluate_gradient(self, x, rho=0.):
+        adjoint_term = sps.lil_matrix((1, self.num_total_dof))
+        L = sps.lil_matrix((self.num_total_dof,1))
+        output_dof = self.prescribed_dof[-14:]
+        # output_dof = self.prescribed_dof[-1:]
+        L[output_dof] = 1
+        L_p = L[np.ix_(self.prescribed_dof)]
+        L_p = L_p.tocsc()
+        adjoint_term_f = spsolve(self.K_ff, -(self.K_fp).dot(L_p))
+        adjoint_term_p = L_p
+        adjoint_term[0,np.ix_(self.free_dof)] = adjoint_term_f.T
+        adjoint_term[0,np.ix_(self.prescribed_dof)] = adjoint_term_p.T
+
+        pR_px = sps.lil_matrix((self.num_total_dof, self.num_elements))
+        for i, element in enumerate(self.mesh.elements):
+            K = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+            element_sensitivity = element.K0*4*x[i]**3
+            element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
+            K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+            K = K.tocsc()
+            pR_px[:, i] = K.dot(self.U)
+
+        pR_px = pR_px.tocsc()
+        gradient = adjoint_term.dot(pR_px).todense()
+
+        # Annoying thing to make gradient 1D
+        df_dx = np.zeros((len(x),))
+        for i in range(len(x)):
+            df_dx[i] = gradient[0,i]
+
+        # set boundary densities to 0 gradient
+        df_dx[x == 1.] = 0.
+        df_dx[x == 1.e-3] = 0.
+
+
+        # penalty portion
+        SF = 2.
+        sigma_yield = self.mesh.material.sigma_y/SF
+        avm_stress_constraint = (self.averaged_von_mises_stresses/sigma_yield - 1).reshape((-1,))
+        avm_stress_penalty_scaling_factors = np.ones_like(avm_stress_constraint)*1e-3
+        # print('von mises', np.max(self.averaged_von_mises_stresses))
+
+        constraint_vector = np.array([])
+        constraint_vector = np.append(constraint_vector, avm_stress_constraint)
+        penalty_scaling_factors_vector = np.array([])
+        penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factors)
+
+        active_contraints = constraint_vector[constraint_vector > 0]
+        active_penalty_scaling_factors = penalty_scaling_factors_vector[constraint_vector > 0]
+        gradient_penalty = np.zeros((len(x),))
+        gradient_penalty[constraint_vector > 0] = active_penalty_scaling_factors*active_contraints
+
+        # if active_contraints.size != 0:
+        #     df_dx += gradient_penalty
+
+        return df_dx
+
+
+
+    def evaluate_analytic_test(self, x, rho=0.):
+        # lambda_p = zeros
+        adjoint_term = sps.lil_matrix((1, self.num_total_dof))
+        L = sps.lil_matrix((self.num_total_dof,1))
+        # output_dof = self.prescribed_dof[-3:]
+        output_dof = self.prescribed_dof[-1]
+        L[output_dof] = -1/100
+        L_p = L[np.ix_(self.prescribed_dof)]
+        L_p = L_p.tocsc()
+        adjoint_term_f = -self.K_ff.dot(self.K_fp).dot(L_p)
+        adjoint_term_f = spsolve(self.K_ff, -(self.K_fp).dot(L_p))
+        adjoint_term_p = L_p
+        adjoint_term[0,np.ix_(self.free_dof)] = adjoint_term_f.T
+        adjoint_term[0,np.ix_(self.prescribed_dof)] = adjoint_term_p.T
+
+        pR_px = sps.lil_matrix((self.num_total_dof, self.num_elements))
+        for i, element in enumerate(self.mesh.elements):
+            K = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+            element_sensitivity = element.K0*4*x[i]**3
+            element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
+            K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+            K = K.tocsc()
+            pR_px[:, i] = K.dot(self.U)
+
+        pR_px = pR_px.tocsc()
+        gradient = adjoint_term.dot(pR_px)
+        # print('U', self.U)
+        # print('pR_px', pR_px.todense())
+        # print('gradient', gradient.todense())
+        
+        return gradient.todense()
+    
+
     
     def setup_dynamics(self):
         self.setup()
-        self.size_K_ff = self.K_ff.shape[0]
-        num_dislpacement_dofs = self.size_K_ff
-        num_dislpacement_states = 2*num_dislpacement_dofs
-        num_rigid_body_dofs = 3     # 2D
-        num_rigid_body_states = 2*num_rigid_body_dofs
+        self.assemble_mass_matrix()
+        self.M = self.M.tocsc()
+        self.M_ff = self.M[np.ix_(self.free_dof, self.free_dof)]
+
+        size_K_ff = self.K_ff.shape[0]
+        self.num_dislpacement_dofs = size_K_ff
+        self.num_dislpacement_states = 2*self.num_dislpacement_dofs
+        self.num_rigid_body_dofs = 3     # 2D
+        num_rigid_body_states = 2*self.num_rigid_body_dofs
 
         # TODO Move this block out of here. Make it a problem input.
-        mass_per_node = 1
-        M = sps.eye(self.size_K_ff, format='csc')*mass_per_node
-        M_inv = sps.linalg.inv(M)
+        M_ff_inv = sps.linalg.inv(self.M_ff)
         self.dampening_per_node = 0.03      # TODO implement Proportional damping
-        displacement_dampening = sps.eye(num_dislpacement_dofs, format='csc')*self.dampening_per_node
-        total_mass = M.sum()
-        moment_of_inertia_zz = total_mass   # TODO update this.
+        displacement_dampening = sps.eye(self.num_dislpacement_dofs, format='csc')*self.dampening_per_node
+        
 
-        num_states = num_dislpacement_states + num_rigid_body_states
-        num_inputs = self.size_K_ff
+        self.num_states = self.num_dislpacement_states
+        num_inputs = self.num_dislpacement_dofs     # each node is a location for a potential input
 
         # Constructing displacement portion of A matrix
-        A_10 = -M_inv.dot(self.K_ff)
-        A_11 = -M_inv.dot(displacement_dampening)
-        A = sps.lil_matrix((num_states, num_states))
-        A[:num_dislpacement_dofs, num_dislpacement_dofs:num_dislpacement_states] = sps.eye(self.size_K_ff, format='csc')
-        A[num_dislpacement_dofs:num_dislpacement_states, :num_dislpacement_dofs] = A_10
-        A[num_dislpacement_dofs:num_dislpacement_states, num_dislpacement_dofs:num_dislpacement_states] = A_11
-
-        test = A.todense()
-        print(test)
-        print(test[-8:,-8:])
-
-        # Constructing rigid body portion of A matrix. No RBD stiffness or damping for now. (drag could contribute damping)
-        # X direction state space
-        A_10 = -M_inv.dot(self.K_ff)
-        A_11 = -M_inv.dot(displacement_dampening)
-        A[num_dislpacement_states:num_dislpacement_states+1, num_dislpacement_states+1:num_dislpacement_states+2] = 1    # Identity of size one.
-        # A[num_dislpacement_dofs:num_dislpacement_states, :num_dislpacement_dofs] = A_10
-        # A[num_dislpacement_dofs:num_dislpacement_states, num_dislpacement_dofs:num_dislpacement_states] = A_11
-
-        test = A.todense()
-        print(test)
-        print(test[-8:,-8:])
-
-
-        # Y direction state space
-        A_10 = -M_inv.dot(self.K_ff)
-        A_11 = -M_inv.dot(displacement_dampening)
-        A[num_dislpacement_states+2:num_dislpacement_states+3, num_dislpacement_states+3:num_dislpacement_states+4] = 1    # Identity of size one.
-        # A[num_dislpacement_dofs:num_dislpacement_states, :num_dislpacement_dofs] = A_10
-        # A[num_dislpacement_dofs:num_dislpacement_states, num_dislpacement_dofs:num_dislpacement_states] = A_11
-
-        test = A.todense()
-        print(test)
-        print(test[-8:,-8:])
-
-
-        # Rotational (around Z) state space
-        A_10 = -M_inv.dot(self.K_ff)
-        A_11 = -M_inv.dot(displacement_dampening)
-        A[num_dislpacement_states+4:num_dislpacement_states+5, num_dislpacement_states+5:num_dislpacement_states+6] = 1    # Identity of size one.
-        # A[num_dislpacement_dofs:num_dislpacement_states, :num_dislpacement_dofs] = A_10
-        # A[num_dislpacement_dofs:num_dislpacement_states, num_dislpacement_dofs:num_dislpacement_states] = A_11
-
-        test = A.todense()
-        print(test)
-        print(test[-8:,-8:])
-
-
+        A_10 = -M_ff_inv.dot(self.K_ff)
+        A_11 = -M_ff_inv.dot(displacement_dampening)
+        A = sps.lil_matrix((self.num_states, self.num_states))
+        A[:self.num_dislpacement_dofs, self.num_dislpacement_dofs:] = sps.eye(self.num_dislpacement_dofs, format='csc')
+        A[self.num_dislpacement_dofs:, :self.num_dislpacement_dofs] = A_10
+        A[self.num_dislpacement_dofs:, self.num_dislpacement_dofs:] = A_11
         A = A.tocsc()
-        test = A.todense()
-        print(test)
-        print(test[-4:,-4:])
+
         # print('Eigenvalues of A: ', sps.linalg.eigs(A))
         self.eigs = sps.linalg.eigs(A)
         self.A_inv = sps.linalg.inv(A)
         # print('inv A: ', sps.linalg.inv(A))   # made sure not singular.
         # print('det: ', np.linalg.det(A.todense()))
-        A_inv = sps.linalg.inv(A)
-        print('NORM: ', np.linalg.norm((A.dot(A_inv)).todense() - np.eye(A.shape[0])))
+        # print('NORM: ', np.linalg.norm((A.dot(A_inv)).todense() - np.eye(A.shape[0])))
 
-        B = sps.lil_matrix((num_states, num_inputs))
-        B[num_dislpacement_dofs:num_dislpacement_states,:] = M_inv
+        B = sps.lil_matrix((self.num_states, num_inputs))
+        B[self.num_dislpacement_dofs:,:] = M_ff_inv
         B = B.tocsc()
 
-        C_dislacements = sps.lil_matrix((num_dislpacement_dofs, num_states))
-        C_dislacements[:, :num_dislpacement_states] = sps.eye(num_dislpacement_dofs)
+        C_dislacements = sps.lil_matrix((self.num_dislpacement_dofs, self.num_states))
+        C_dislacements[:, :self.num_dislpacement_dofs] = sps.eye(self.num_dislpacement_dofs)
         C_dislacements = C_dislacements.tocsc()
-
-        C_rigid_body_dofs = sps.lil_matrix((num_rigid_body_dofs, num_states))
-        C_rigid_body_dofs[:, num_dislpacement_states:(num_dislpacement_states+num_rigid_body_dofs)] = sps.eye(num_rigid_body_dofs)
-        C_rigid_body_dofs = C_rigid_body_dofs.tocsc()
 
         self.A = A
         self.B = B
         self.C_dislacements = C_dislacements
-        self.C_rigid_body_dofs = C_rigid_body_dofs
+
+        # Maps from self.F*delta_t**2 to rigid body displacement. 
+        self.rigid_body_translation_map = np.zeros((2, self.num_total_dof)) # 2 is the number of rigid body translation
+        even_indices = np.arange(0, self.num_total_dof, 2)
+        odd_indices = np.arange(1, self.num_total_dof, 2)
+
+        self.total_mass = self.M[np.ix_(odd_indices, odd_indices)].sum()
+        self.moment_of_inertia_zz = 0.012495943554666666   # TODO update this.
+
+        self.rigid_body_translation_map[0, np.ix_(even_indices)] = 1/(self.total_mass)
+        self.rigid_body_translation_map[1, np.ix_(odd_indices)] = 1/(self.total_mass)
+
+
 
 
     '''
@@ -484,9 +765,14 @@ class FEA:
             t_eval = np.delete(t_eval, 0)
         self.nt = len(t_eval)
         
-        self.x = x
-        self.rigid_body_disp = np.zeros((self.num_dimensions,1))
-        self.rigid_body_origin = np.array([0.25, 0.05])
+        self.x = np.zeros((self.nt+1, self.num_dislpacement_states))
+        self.x[0,:] = x.reshape((-1,))
+        self.rigid_body_displacement = np.zeros((self.nt+1, self.num_rigid_body_dofs))
+        self.rigid_body_velocity = np.zeros((self.nt+1, self.num_rigid_body_dofs))
+        self.rigid_body_acceleration = np.zeros((self.nt+1, self.num_rigid_body_dofs))
+        current_rigid_body_displacement = np.zeros((3,))
+        current_rigid_body_velocity = np.zeros((3,))
+        self.rigid_body_origin = np.array([0.25, 0.05, 0.])
 
         u = np.zeros_like(self.F_f.todense())
         u = sps.csc_matrix(u)
@@ -503,13 +789,16 @@ class FEA:
             t_next_interval = t_step_inputs[input_counter+1]
         self.reset_loads()
         self.apply_loads(loads[input_counter][1])
+        if self.use_self_weight:
+            self.apply_self_weight(g=self.g)
         self.F = self.F.tocsc()
         self.F_f = self.F[self.free_dof]
         self.F_p = self.F[self.prescribed_dof]    # don't know yet
-        self.reshaped_Ff = self.F_f.reshape((-1, self.num_dimensions))
+        # self.reshaped_Ff = self.F_f.reshape((-1, self.num_dimensions))
+        self.reshaped_F = self.F.reshape((self.num_nodes, self.num_dimensions))
         evaluated_dynamics = {t0: x0} # {t: x}
         evaluated_exponentials = {} # {delta_t, e^(A*(delta_t))}
-        for t in t_eval:
+        for i, t in enumerate(t_eval):
             print(t)
             while t >= t_next_interval:
                 
@@ -518,7 +807,11 @@ class FEA:
 
                 # evaulate to end of step input (from last evaluated dynamic) and add to evaluated_dynamics list
                 delta_t = t_next_interval-last_eval_t
-                if delta_t in evaluated_exponentials.keys():
+                evaluated_delta_t_list = np.array(list(evaluated_exponentials.keys()))
+                tol = 1e-6
+                if evaluated_delta_t_list.size != 0 and np.min(abs(evaluated_delta_t_list - delta_t)) <= tol:
+                    index = np.argmin(abs(evaluated_delta_t_list - delta_t))
+                    delta_t = evaluated_delta_t_list[index]
                     e_At = evaluated_exponentials[delta_t]
                 else:
                     e_At = sps.linalg.expm(self.A*(delta_t))
@@ -526,17 +819,33 @@ class FEA:
                 x_next_interval = e_At.dot(last_eval_x) + self.A_inv.dot((e_At - identity_mat).dot(self.B.dot(self.F_f)))
                 evaluated_dynamics[t_next_interval] = x_next_interval
 
-                rigid_body_displacement = self.reshaped_Ff.sum(0).T * (delta_t**2)/2
-                self.rigid_body_disp = np.hstack((self.rigid_body_disp, rigid_body_displacement))
+                
+                average_displcements = self.C_dislacements.dot((last_eval_x + x_next_interval)/2)
+                delta_rigid_body_dynamics = self.integrate_rigid_body_dynamics(current_rigid_body_displacement, current_rigid_body_velocity, delta_t, average_displcements)
+    
+                delta_rigid_body_translation = delta_rigid_body_dynamics[0]
+                delta_rigid_body_translational_velocity = delta_rigid_body_dynamics[1]
+                rigid_body_translational_acceleration = delta_rigid_body_dynamics[2]
+                delta_rigid_body_rotation = delta_rigid_body_dynamics[3]
+                delta_rigid_body_rotational_velocity = delta_rigid_body_dynamics[4]
+                rigid_body_rotational_acceleration = delta_rigid_body_dynamics[5]
+                
+                current_rigid_body_displacement[:2] = current_rigid_body_displacement[:2] + delta_rigid_body_translation.reshape((-1,))
+                current_rigid_body_displacement[2] = current_rigid_body_displacement[2] + delta_rigid_body_rotation
+                current_rigid_body_velocity[:2] = current_rigid_body_velocity[:2] + delta_rigid_body_translation.reshape((-1,))
+                current_rigid_body_velocity[2] = current_rigid_body_velocity[2] + delta_rigid_body_rotational_velocity
+
 
                 # update self.F and self.F_f
                 self.reset_loads()
                 self.apply_loads(loads[input_counter][1])
+                if self.use_self_weight:
+                    self.apply_self_weight(g=self.g, rotation=current_rigid_body_displacement[2])
                 self.F = self.F.tocsc()
                 self.F_f = self.F[self.free_dof]
                 self.F_p = self.F[self.prescribed_dof]    # don't know yet
-                self.reshaped_Ff = self.F_f.reshape((-1, self.num_dimensions))
-
+                # self.reshaped_Ff = self.F_f.reshape((-1, self.num_dimensions))
+                self.reshaped_F = self.F.reshape((self.num_nodes, self.num_dimensions))
 
                 input_counter += 1
                 if input_counter == len(t_step_inputs):
@@ -550,7 +859,11 @@ class FEA:
 
             # evaulate to end of step input (from last evaluated dynamic) and add to evaluated_dynamics list
             delta_t = t-last_eval_t
-            if delta_t in evaluated_exponentials.keys():
+            evaluated_delta_t_list = np.array(list(evaluated_exponentials.keys()))
+            tol = 1e-6
+            if evaluated_delta_t_list.size != 0 and np.min(abs(evaluated_delta_t_list - delta_t)) <= tol:
+                index = np.argmin(abs(evaluated_delta_t_list - delta_t))
+                delta_t = evaluated_delta_t_list[index]
                 e_At = evaluated_exponentials[delta_t]
             else:
                 e_At = sps.linalg.expm(self.A*(delta_t))
@@ -560,29 +873,75 @@ class FEA:
             # x_t = e_At.dot(last_eval_x) + self.A_inv.dot((e_At - identity_mat).dot((self.B.dot(self.F_f)).todense()))
             # x_t = x_t.reshape((-1,))
             evaluated_dynamics[t] = x_t
-            self.x = np.hstack((self.x, x_t))
+            self.x[i+1,:] = x_t.reshape((-1,))
+            # self.x = np.hstack((self.x, x_t))
 
-            rigid_body_displacement = self.reshaped_Ff.sum(0).T * (delta_t**2)/2        # to account for initial velocity, add term here
-            
-            for i, load in enumerate(loads):
-                pass
+            # evaluate rigid body dynamics
+            # taking the average displacement to update the nodes (not analytic!!)
+            average_displcements = self.C_dislacements.dot((last_eval_x + x_t)/2)
+            delta_rigid_body_dynamics = self.integrate_rigid_body_dynamics(current_rigid_body_displacement, current_rigid_body_velocity, delta_t, average_displcements)
+    
+            delta_rigid_body_translation = delta_rigid_body_dynamics[0]
+            delta_rigid_body_translational_velocity = delta_rigid_body_dynamics[1]
+            rigid_body_translational_acceleration = delta_rigid_body_dynamics[2]
+            delta_rigid_body_rotation = delta_rigid_body_dynamics[3]
+            delta_rigid_body_rotational_velocity = delta_rigid_body_dynamics[4]
+            rigid_body_rotational_acceleration = delta_rigid_body_dynamics[5]
 
-            # get displalcement vector
-
-            # cross displacement vector with force vector
-            # integrate across time
-            # rigid_body_rotation = self.
-            self.rigid_body_disp = np.hstack((self.rigid_body_disp, rigid_body_displacement))
-
-            # all of the time steps can be built, and then all of the matrix exponentials can be calculated in parallel
-            # These matrix exponentials can then be plugged into equations to get all states in parallel.
+            self.rigid_body_displacement[i+1,:2] = current_rigid_body_displacement[:2] + delta_rigid_body_translation.reshape((-1,))
+            self.rigid_body_displacement[i+1,2]  = current_rigid_body_displacement[2] +  delta_rigid_body_rotation
+            current_rigid_body_displacement = self.rigid_body_displacement[i+1,:]
+            self.rigid_body_velocity[i+1,:2] = current_rigid_body_velocity[:2] + delta_rigid_body_translational_velocity.reshape((-1,))
+            self.rigid_body_velocity[i+1,2]  = current_rigid_body_velocity[2] +  delta_rigid_body_rotational_velocity
+            current_rigid_body_velocity = self.rigid_body_velocity[i+1,:]
+            self.rigid_body_acceleration[i+1,:2] = rigid_body_translational_acceleration
+            self.rigid_body_acceleration[i+1,2]  = rigid_body_rotational_acceleration
 
         self.U = np.zeros((self.num_total_dof, self.nt+1))
-        self.U[self.free_dof,:] = self.C_dislacements.dot(self.x)
+        self.U[self.free_dof,:] = self.C_dislacements.dot(self.x.T)
         self.U_per_time_step = self.U.reshape((-1, self.nt+1))
         self.U_per_time_step = np.moveaxis(self.U_per_time_step, -1, 0)
         self.U_per_dim_per_time = self.U.reshape((self.num_nodes, self.num_dimensions, self.nt+1))
         self.U_per_dim_per_time = np.moveaxis(self.U_per_dim_per_time, -1, 0)
+
+    
+    '''
+    Explicitely integrates the rigid body dynamics over a time interval.
+    '''
+    def integrate_rigid_body_dynamics(self, current_rigid_body_displacement, current_rigid_body_velocity, delta_t, average_displcements):
+        current_rotation = current_rigid_body_displacement[2]
+        # taking the average displacement to update the nodes (not analytic!!)
+        # calculate rotation
+        total_displacement_vec = np.zeros((self.num_nodes*self.num_dimensions,))
+        total_displacement_vec[self.free_dof] = average_displcements.reshape((-1,))
+        undeformed_nodes = self.mesh.nodes.copy()
+        deformed_nodes = np.zeros((self.num_nodes, 3))  # need 3D to get z direction moment
+        deformed_nodes[:,:2] = undeformed_nodes + total_displacement_vec.reshape((self.num_nodes, self.num_dimensions))
+        deformed_nodes -= self.rigid_body_origin
+        zz_basis_vector = np.array([0., 0., 1.])
+        force_3d = np.zeros((self.num_nodes, 3))  # Need 3D force to get z direction moment
+        force_3d[:,:2] = self.reshaped_F.todense()
+        net_moment_zz = np.sum(np.cross(deformed_nodes, force_3d).dot(zz_basis_vector))
+        delta_rigid_body_rotational_velocity = 1/(self.moment_of_inertia_zz) * net_moment_zz * delta_t
+        delta_rigid_body_rotation = 1/(2*self.moment_of_inertia_zz)*net_moment_zz*(delta_t**2) + (current_rigid_body_velocity[2] + delta_rigid_body_rotational_velocity/2)*delta_t
+
+        # calculate translation
+        averate_rotation = current_rotation + delta_rigid_body_rotation/2
+        c = np.cos(averate_rotation)
+        s = np.sin(averate_rotation)
+        rotation_matrix = np.array([[c, -s], [s, c]])
+
+        net_translation_acceleration = rotation_matrix.dot(self.rigid_body_translation_map.dot(self.F_body_fixed.todense())) + self.rigid_body_translation_map.dot(self.F_earth_fixed.todense())
+        rigid_body_translational_acceleration = np.zeros((self.num_dimensions,))    # made because of scipy sparse reshape bug
+        rigid_body_translational_acceleration[0] = net_translation_acceleration[0]
+        rigid_body_translational_acceleration[1] = net_translation_acceleration[1]
+        delta_rigid_body_translational_velocity = rigid_body_translational_acceleration * delta_t
+        delta_rigid_body_translation = rigid_body_translational_acceleration/2*delta_t**2 + (current_rigid_body_velocity[:2] + delta_rigid_body_translational_velocity/2)*delta_t
+
+        delta_rigid_body_dynamics = [delta_rigid_body_translation, delta_rigid_body_translational_velocity, rigid_body_translational_acceleration, 
+                                    delta_rigid_body_rotation, delta_rigid_body_rotational_velocity, net_moment_zz]
+
+        return delta_rigid_body_dynamics
 
 
     '''
@@ -595,6 +954,35 @@ class FEA:
         self.stresses_dict['yy'] = self.stresses[:, np.ix_(self.stress_index_map['yy'])].reshape((self.nt+1, -1))
         self.stresses_dict['xy'] = self.stresses[:, np.ix_(self.stress_index_map['xy'])].reshape((self.nt+1, -1))
         self.stresses_dict['axial'] = self.stresses[:, np.ix_(self.stress_index_map['axial'])].reshape((self.nt+1, -1))
+
+        stresses_vec = np.zeros((self.nt+1, 3, self.stresses_dict['xx'].shape[1]))
+        stresses_vec[:,0,:] = self.stresses_dict['xx']
+        stresses_vec[:,1,:] = self.stresses_dict['yy']
+        stresses_vec[:,2,:] = self.stresses_dict['xy']
+        von_mises_map = np.array([
+            [1., -1/2, 0],
+            [-1/2, 1., 0],
+            [0., 0., 3.]
+        ])
+        m_dot_stresses = von_mises_map.dot(stresses_vec)
+        
+        von_mises_stresses = np.zeros((self.nt+1, self.stresses_dict['xx'].shape[1]))
+        averaged_von_mises_stresses = np.zeros((self.nt+1, int(self.stresses_dict['xx'].shape[1]/4)))
+        counter = 0
+        averaged_stress_index = 0
+        for i in range(self.stresses_dict['xx'].shape[1]):
+            for j in range(self.nt+1):
+                von_mises_stresses[j,i] = np.sqrt(stresses_vec[j,:,i].dot(m_dot_stresses[:,j,i]))
+                averaged_von_mises_stresses[j,averaged_stress_index] += von_mises_stresses[j,i]/4
+
+            counter += 1
+            if counter == 4:
+                averaged_stress_index += 1
+                counter = 0
+
+        self.von_mises_stresses = von_mises_stresses
+        self.averaged_von_mises_stresses = averaged_von_mises_stresses
+
         return self.stresses
 
 
@@ -628,27 +1016,17 @@ class FEA:
         self.stress_eval_points_dict['axial'] = self.stress_eval_points[:, np.ix_(self.stress_eval_points_indices['axial']), :].reshape((self.nt+1, -1, self.num_dimensions))
 
 
-    def evaluate_dynamic_stresses(self):
-        self.stresses = (self.stress_map.dot(self.U)).T
-        self.stresses_dict = {}
-        self.stresses_dict['xx'] = self.stresses[:, np.ix_(self.stress_index_map['xx'])].reshape((self.nt+1, -1))   # reshape for weird indexing thing (to get rid of extra axis)
-        self.stresses_dict['yy'] = self.stresses[:, np.ix_(self.stress_index_map['yy'])].reshape((self.nt+1, -1))
-        self.stresses_dict['xy'] = self.stresses[:, np.ix_(self.stress_index_map['xy'])].reshape((self.nt+1, -1))
-        self.stresses_dict['axial'] = self.stresses[:, np.ix_(self.stress_index_map['axial'])].reshape((self.nt+1, -1))
-        return self.stresses
-
-
     '''
     Calculates the total strain energy.
     '''
-    def calc_strain_energy(self):
+    def evaluate_strain_energy(self):
         self.strain_energy = self.U.T.dot(self.K.dot(self.U))/2
         return self.strain_energy
 
     '''
     Calculates the strain energy per element.
     '''
-    def calc_strain_energy_per_element(self):
+    def evaluate_strain_energy_per_element(self):
         self.strain_energy_per_element = np.zeros(self.num_elements)
         self.strain_energy_density_per_element = np.zeros(self.num_elements)
         self.element_midpoints = np.zeros((self.num_elements, self.num_dimensions))
@@ -694,6 +1072,119 @@ class FEA:
     #     return self.strain_energy_density_per_element
 
 
+
+    def plot(self, stress_type=None, time_step=None, dof=None, show_dislpacements=False, show_nodes=False, show_connections=False, show_undeformed=False,
+                save_plots=False, video_file_name=None, video_fps=1, show=True):
+        nodes = self.mesh.nodes
+        U_reshaped = self.U.reshape((-1, self.num_dimensions))
+        max_x_dist = np.linalg.norm(max(nodes[:,0]) - min(nodes[:,0]))
+        max_y_dist = np.linalg.norm(max(nodes[:,1]) - min(nodes[:,1]))
+        scale_dist = np.linalg.norm(np.array([max_x_dist, max_y_dist]))
+        if np.linalg.norm(self.U) != 0:
+            visualization_scaling_factor = scale_dist*0.1/max(np.linalg.norm(U_reshaped, axis=1))
+        else:
+            visualization_scaling_factor = 0
+        self.visualization_scaling_factor = visualization_scaling_factor
+
+        self.element_midpoints = np.zeros((self.nt+1, self.num_elements, self.num_dimensions))
+        self.element_midpoints_plot = np.zeros((self.nt+1, self.num_elements, self.num_dimensions))
+        self.element_midpoints_undeformed = np.zeros((self.nt+1, self.num_elements, self.num_dimensions))
+        for i, element in enumerate(self.mesh.elements):
+            element_dofs = self.nodes_to_dof_indices(element.node_map)
+            element_U = self.U[np.ix_(element_dofs)]
+
+            self.element_midpoints[:,i,:] = element.calc_midpoint(element_U)
+            self.element_midpoints_plot[:,i,:] = element.calc_midpoint(element_U*self.visualization_scaling_factor)
+            self.element_midpoints_undeformed[:,i,:] = element.calc_midpoint()
+
+        if time_step is None:
+            time_step = range(len(self.t_eval))
+        elif type(time_step) == int:
+            time_step = [time_step]
+        if dof is not None and type(dof) == int:
+            dof = [dof]
+
+        if stress_type is not None:
+            self.evaluate_stress_points(visualization_scaling_factor)
+
+            if stress_type == 'x' or stress_type == 'xx':
+                stresses = self.stresses_dict['xx']
+                stress_eval_points = self.stress_eval_points_dict['xx']
+            elif stress_type == 'y' or stress_type == 'yy':
+                stresses = self.stresses_dict['yy']
+                stress_eval_points = self.stress_eval_points_dict['yy']
+            elif stress_type == 'tao' or stress_type == 'xy':
+                stresses = self.stresses_dict['xy']
+                stress_eval_points = self.stress_eval_points_dict['xy']
+            elif stress_type == 'von_mises' or stress_type == 'vm':
+                stresses = self.von_mises_stresses
+                stress_eval_points = self.stress_eval_points_dict['xx']
+            elif stress_type == 'averaged_von_mises' or stress_type == 'avm':
+                stresses = self.averaged_von_mises_stresses
+                stress_eval_points = self.element_midpoints_plot
+            elif stress_type == 'axial' or stress_type == 'tension' or stress_type == 'compression' or stress_type == '11':
+                stresses = self.stresses_dict['axial']
+                stress_eval_points = self.stress_eval_points_dict['axial']
+
+        if dof is None:
+            print('Plotting...')
+            for t_step in time_step:
+                t = self.t_eval[t_step]
+                plt.figure()
+                if show_dislpacements:
+                    self.plot_displacements(show_nodes=show_nodes, show_connections=show_connections, show_undeformed=show_undeformed,
+                                             time_step=t_step, visualization_scaling_factor=visualization_scaling_factor, show=False)
+                if stress_type is not None:
+                    self.plot_stresses(stresses=stresses, stress_eval_points=stress_eval_points, time_step=t_step, show=False)
+
+                if stress_type is None:
+                    # plt.title(f'Structure at t ={t: 9.5f}')
+                    plt.title(f'Structure at t ={t: 1.2e}')
+                else:
+                    plt.title(f'Stress (sigma_{stress_type}) Colorplot of Structure at t ={t:1.2e}')
+                plt.xlabel(f'x (m*{visualization_scaling_factor:3.0e})')
+                plt.ylabel(f'y (m*{visualization_scaling_factor:3.0e})')
+                plt.gca().set_aspect('equal')
+                if save_plots or video_file_name is not None:
+                    plt.savefig(f'plots/video_plot_at_t_{t:9.9f}.png', bbox_inches='tight')
+                if show:
+                    plt.show()
+                plt.close()
+
+            if video_file_name is not None:
+                self.generate_video(video_file_name=video_file_name, video_fps=video_fps)
+
+        elif dof is not None:
+            if stress_type is not None:
+                visualization_scaling_factor = max(np.linalg.norm(stresses, axis=1))*0.01/max(np.linalg.norm(U_reshaped, axis=1))
+            else:
+                visualization_scaling_factor = 1
+
+            plt.figure()
+            for index in dof:
+                if show_dislpacements:
+                    plt.plot(self.t_eval, self.U[index, :]*visualization_scaling_factor*50, '-', label=f'Displacement of node {index}')
+                if stress_type is not None:
+                    plot_stresses = stresses[:, index]   # (time_step, dof)
+                    plt.plot(self.t_eval, plot_stresses, '-o', label=f'Stress of node {index}')
+            
+            if show_dislpacements and stress_type is not None:
+                plt.title(f'Stress (sigma_{stress_type}) and Scaled Displacement vs. Time')
+                plt.ylabel(f'Stress (Pa) and Displacement (m /{visualization_scaling_factor:3.0e})')
+            elif show_dislpacements:
+                plt.title(f'Y-Displacement of Node(s)')
+                plt.ylabel('Displacement (m)')
+            elif stress_type is not None:
+                plt.title(f'Stress (sigma_{stress_type}) vs. Time')
+                plt.ylabel('Stress (Pa)')
+
+            plt.xlabel('Time (s)')
+            plt.legend()
+
+            if show:
+                plt.show()
+
+
     '''
     Plots the solution.
     '''
@@ -720,7 +1211,8 @@ class FEA:
             if show_nodes:
                 if show_undeformed:
                     plt.plot(nodes[time_step,:,0], nodes[time_step, :,1], 'ko')
-                plt.plot(deformed_nodes[time_step,:,0], deformed_nodes[time_step,:,1], 'r*')
+                else:
+                    plt.plot(deformed_nodes[time_step,:,0], deformed_nodes[time_step,:,1], 'r*')
             if show_connections:
                 for start_node_index in self.node_connectivity.keys():
                     for end_node_index in self.node_connectivity[start_node_index]:
@@ -731,11 +1223,12 @@ class FEA:
                             start_node = nodes[time_step,start_node_index]
                             end_node = nodes[time_step,end_node_index]
                             plt.plot([start_node[0], end_node[0]], [start_node[1], end_node[1]], '--k')
-                        start_deformed_node_x = deformed_nodes[time_step,start_node_index,0]
-                        start_deformed_node_y = deformed_nodes[time_step,start_node_index,1]
-                        end_deformed_node_x = deformed_nodes[time_step,end_node_index,0]
-                        end_deformed_node_y = deformed_nodes[time_step,end_node_index,1]
-                        plt.plot([start_deformed_node_x, end_deformed_node_x], [start_deformed_node_y, end_deformed_node_y], '--r')
+                        else:
+                            start_deformed_node_x = deformed_nodes[time_step,start_node_index,0]
+                            start_deformed_node_y = deformed_nodes[time_step,start_node_index,1]
+                            end_deformed_node_x = deformed_nodes[time_step,end_node_index,0]
+                            end_deformed_node_y = deformed_nodes[time_step,end_node_index,1]
+                            plt.plot([start_deformed_node_x, end_deformed_node_x], [start_deformed_node_y, end_deformed_node_y], '--r')
 
 
             plt.title(f'Scaled Discplacements (x{visualization_scaling_factor}) with {self.num_elements} Elements')
@@ -763,103 +1256,44 @@ class FEA:
         plt.title(f'Stress (Pa) Color Plot with {self.num_elements} Elements')
         plt.xlabel('x1 (m)')
         plt.ylabel('x2 (m)')
-        plt.colorbar()
+        plt.colorbar(orientation='horizontal')
         if show:
             plt.show()
 
 
-    def plot(self, stress_type=None, time_step=None, dof=None, show_dislpacements=False, show_nodes=False, show_connections=False, show_undeformed=False,
-                save_plots=False, video_file_name=None, video_fps=1, show=True):
-        nodes = self.mesh.nodes
-        U_reshaped = self.U.reshape((-1, self.num_dimensions))
-        max_x_dist = np.linalg.norm(max(nodes[:,0]) - min(nodes[:,0]))
-        max_y_dist = np.linalg.norm(max(nodes[:,1]) - min(nodes[:,1]))
-        scale_dist = np.linalg.norm(np.array([max_x_dist, max_y_dist]))
-        if np.linalg.norm(self.U) != 0:
-            visualization_scaling_factor = scale_dist*0.1/max(np.linalg.norm(U_reshaped, axis=1))
-        else:
-            visualization_scaling_factor = 0
-        self.visualization_scaling_factor = visualization_scaling_factor
+    def plot_rigid_body_displacement(self, x_axis='x', y_axis='y', show=True):
+        t_data = self.t_eval
+        x_data = self.rigid_body_displacement[:,0]
+        y_data = self.rigid_body_displacement[:,1]
+        rot_z_data = self.rigid_body_displacement[:,2]
+        plot_points = np.zeros((self.nt+1, 2))  # 2D plot
 
-        if time_step is None:
-            time_step = range(len(self.t_eval))
-        elif type(time_step) == int:
-            time_step = [time_step]
-        if dof is not None and type(dof) == int:
-            dof = [dof]
+        if x_axis == 't':
+            x_coords = t_data
+        elif x_axis == 'x':
+            x_coords = x_data
+        elif x_axis == 'y':
+            x_coords = y_data
+        elif x_axis == 'rot_z':
+            x_coords = rot_z_data
 
-        if stress_type is not None:
-            self.evaluate_stress_points(visualization_scaling_factor)
+        if y_axis == 't':
+            y_coords = t_data
+        elif y_axis == 'x':
+            y_coords = x_data
+        elif y_axis == 'y':
+            y_coords = y_data
+        elif y_axis == 'rot_z':
+            y_coords = rot_z_data
 
-            if stress_type == 'x' or stress_type == 'xx':
-                stresses = self.stresses_dict['xx']
-                stress_eval_points = self.stress_eval_points_dict['xx']
-            elif stress_type == 'y' or stress_type == 'yy':
-                stresses = self.stresses_dict['yy']
-                stress_eval_points = self.stress_eval_points_dict['yy']
-            elif stress_type == 'tao' or stress_type == 'xy':
-                stresses = self.stresses_dict['xy']
-                stress_eval_points = self.stress_eval_points_dict['xy']
-            elif stress_type == 'axial' or stress_type == 'tension' or stress_type == 'compression' or stress_type == '11':
-                stresses = self.stresses_dict['axial']
-                stress_eval_points = self.stress_eval_points_dict['axial']
+        # plt.plot(plot_points[:,0], plot_points[:,1], '-bo')
+        plt.plot(x_coords, y_coords, '-bo')
+        plt.title(f'Rigid Body Dynamics: {y_axis} vs. {x_axis}')
+        plt.xlabel(x_axis)
+        plt.ylabel(y_axis)
+        if show:
+            plt.show()
 
-        if dof is None:
-            print('Plotting...')
-            for t_step in time_step:
-                t = self.t_eval[t_step]
-                plt.figure()
-                if show_dislpacements:
-                    self.plot_displacements(show_nodes=show_nodes, show_connections=show_connections, show_undeformed=show_undeformed,
-                                             time_step=t_step, visualization_scaling_factor=visualization_scaling_factor, show=False)
-                if stress_type is not None:
-                    self.plot_stresses(stresses=stresses, stress_eval_points=stress_eval_points, time_step=t_step, show=False)
-
-                if stress_type is None:
-                    plt.title(f'Structure at t ={t: 9.5f}')
-                else:
-                    plt.title(f'Stress Colorplot of Structure at t ={t:9.5f}')
-                plt.xlabel(f'x (m*{visualization_scaling_factor})')
-                plt.ylabel(f'y (m*{visualization_scaling_factor})')
-                plt.gca().set_aspect('equal')
-                if save_plots or video_file_name is not None:
-                    plt.savefig(f'plots/video_plot_at_t_{t:9.9f}.png', bbox_inches='tight')
-                if show:
-                    plt.show()
-                plt.close()
-
-            if video_file_name is not None:
-                self.generate_video(video_file_name=video_file_name, video_fps=video_fps)
-
-        elif dof is not None:
-            if stress_type is not None:
-                visualization_scaling_factor = max(np.linalg.norm(stresses, axis=1))*0.01/max(np.linalg.norm(U_reshaped, axis=1))
-            else:
-                visualization_scaling_factor = 1
-
-            plt.figure()
-            for index in dof:
-                if show_dislpacements:
-                    plt.plot(self.t_eval, self.U[index, :]*visualization_scaling_factor, '-o', label=f'Displacement of node {index}')
-                if stress_type is not None:
-                    plot_stresses = stresses[:, index]   # (time_step, dof)
-                    plt.plot(self.t_eval, plot_stresses, '-o', label=f'Stress of node {index}')
-            
-            if show_dislpacements and stress_type is not None:
-                plt.title(f'Stress (sigma_{stress_type}) and Scaled Displacement vs. Time')
-                plt.ylabel(f'Stress (Pa) and Displacement (m /{visualization_scaling_factor})')
-            elif show_dislpacements:
-                plt.title(f'Y-Displacement of Node(s)')
-                plt.ylabel('Displacement (m)')
-            elif stress_type is not None:
-                plt.title(f'Stress (sigma_{stress_type}) vs. Time')
-                plt.ylabel('Stress (Pa)')
-
-            plt.xlabel('Time (s)')
-            plt.legend()
-
-            if show:
-                plt.show()
 
     '''
     Generates a video.
@@ -899,81 +1333,15 @@ class FEA:
         plt.show()
 
 
-if __name__ == "__main__":
-    from material import IsotropicMaterial
-    from component import Component
-    from mesh import UnstructuredMesh
-    from design_representation import FERepresentation
-
-
-    nodes = np.array([
-        [0., 0.],
-        [0., 0.0025],
-        [0., 0.005],
-        [0.00333, 0.],
-        [0.00333, 0.0025],
-        [0.00333, 0.005],
-        [0.00666, 0.],
-        [0.00666, 0.0025],
-        [0.01, 0.],
-        [0.01, 0.005]
-    ])
-
-    element_nodes = np.array([
-        [0, 1, 3, 4],
-        [1, 2, 4, 5],
-        [3, 4, 6, 7],
-        [4, 5, 7, 9],
-        [6, 7, 8, 9]
-    ])
-
-    thickness = 0.001   # m
-
-    hw5_mat = IsotropicMaterial(name='hw5_mat', E=100e9, nu=0.3)
-    
-    hw5_component = Component(name='hw5_structure')
-    hw5_component_properties_dict = {
-        'material' : hw5_mat,
-        'thickness': thickness
-    }
-    hw5_component.add_properties(hw5_component_properties_dict)
-
-    hw5_mesh = UnstructuredMesh(name='hw_mesh', nodes=nodes, element_nodes=element_nodes)
-    # hw5_component.add_design_representations(hw5_mesh)
-
-    hw5_fe_representation = FERepresentation(name='hw5_fe_representation', components=[hw5_component], meshes=[hw5_mesh])
-
-    load_nodes = np.array([2, 5, 9, 8, 9])
-    load_forces = np.array([
-        [0., 30./4e3],
-        [0., 11.25e3],
-        [0., 11.25e3],
-        [0.4e3, 0.],
-        [1.6e3, 0.]
-        ])
-    
-    hw5_loads = [(2, np.array([0., 5.e3])),
-        (5, np.array([0., 15.e3])),
-        (9, np.array([0., 10.e3])),
-        (8, np.array([0.4e3, 0.])),
-        (9, np.array([1.6e3, 0.]))]
-
-    
-    hw5_boundary_conditions = [
-        (0, 0, 0),
-        (1, 0, 0),
-        (2, 0, 0),
-        (0, 1, 0),
-        (3, 1, 0),
-        (6, 1, 0),
-        (8, 1, 0)
-    ]
-
-    hw5 = FEA(design_representation=hw5_fe_representation, loads=hw5_loads, boundary_conditions=hw5_boundary_conditions)
-    hw5.setup()
-    hw5.evaluate()
-    print(hw5.U)
-    hw5.plot()
-    
-    hw5.calc_stresses()
-    print(hw5.stresses[4,:,:2])     # normal stressses of element A
+    '''
+    Plot the topology of the structure given the densities.
+    '''
+    def plot_topology(self, densities):
+        self.plot(show=False)
+        # self.plot_displacements(show_nodes=False, show_connections=True, show_undeformed=True, show=False)
+        densities[densities > 1] = 1.
+        densities[densities < 1.e-3] = 1.e-3
+        plt.scatter(self.element_midpoints_undeformed[0,:,0], self.element_midpoints_undeformed[0,:,1], c=densities, cmap='gray_r')
+        plt.gca().set_aspect('equal')
+        plt.colorbar()
+        plt.show()

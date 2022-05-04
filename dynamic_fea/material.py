@@ -31,7 +31,6 @@ class OrthotropicMaterial(Material):
     cte11: float
     cte22: float
     cte12: float
-    # thickness: float  # Leave this to geometry
     density: float
     sigma11: float
     sigma22: float

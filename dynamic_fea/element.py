@@ -54,6 +54,12 @@ class QuadElement(Element):
         oosqrt3 = 1/np.sqrt(3)
         self.parametric_integration_coordinates = np.array([[-oosqrt3, -oosqrt3], [-oosqrt3, oosqrt3], [oosqrt3, -oosqrt3], [oosqrt3, oosqrt3]])
         self.num_integration_points = 4
+        self.num_nodes = 4
+
+        self.density0 = self.material.density
+        self.density = self.material.density
+        self.E0 = self.material.E
+        self.E = self.material.E
 
 
     '''
@@ -75,6 +81,7 @@ class QuadElement(Element):
             return integrand
 
         self.K = self.thickness*self.second_order_double_integral_gauss_quadrature(calc_k_integrand)
+        self.K0 = self.K.copy()
         return self.K
 
 
@@ -98,6 +105,7 @@ class QuadElement(Element):
         E_local = E/((1+nu)*(1-2*nu))*np.array([[1-nu, nu, 0], [nu, 1-nu, 0], [0, 0, (1-2*nu)/2]])
         self.E_local = E_local
         return E_local
+
 
     '''
     Calculates the local E matrix of an element in plane stress.
@@ -210,9 +218,13 @@ class QuadElement(Element):
     def calc_midpoint(self, U=None):
         if U is None:
             U = np.zeros_like(self.nodes, dtype=float)
-        if U.shape[1] == 1:
-            U = U.reshape(self.nodes.shape)
 
+        new_shape = (-1,) + self.nodes.shape    # (nt+1, num_dof, 2 or 3)
+        U = U.reshape(new_shape)
+        nt_plus_1 = U.shape[0]
+        nodes = self.nodes.copy()
+
+        nodes = np.broadcast_to(nodes, (nt_plus_1, *nodes.shape))
         deformed_nodes = self.nodes + U
 
         zeta_eta = np.array([[0., 0.]]) # midpoint
@@ -303,7 +315,20 @@ class QuadElement(Element):
         self.volume = area*self.thickness
         return self.volume
 
-    
+
+    '''
+    Calculates the local load vector for self-weight.
+    '''
+    def calc_self_weight(self, g, rotation=0):
+        self.calc_volume()
+        density = self.density
+        c = np.cos(-rotation)
+        s = np.sin(-rotation)
+        rotation_matrix = np.array([[c, -s], [s, c]])
+        # self.r_g_local = density*self.volume*g*1/4*np.array([0., -1., 0, -1., 0., -1., 0., -1.]).reshape((-1,1))
+        self.r_g_local = density*self.volume*g*1/4*rotation_matrix.dot(np.array([[0., 0., 0., 0.],[-1., -1., -1., -1.]])).reshape((-1,1), order='F')
+        return self.r_g_local
+
 
     '''
     Assembles the stress calculation map
@@ -318,6 +343,7 @@ class QuadElement(Element):
         E_stresses = np.kron(np.eye(num_int_points), self.E_local)
 
         self.stress_map = np.dot(E_stresses, B_stresses)
+        self.stress_map0 = self.stress_map.copy()
 
         return self.stress_map
 
@@ -375,6 +401,12 @@ class QuadElement(Element):
         self.assemble_integration_coordinates_map()
         self.calc_area()
         self.calc_volume()
+    
+
+    def evaluate_topology(self, density):
+        self.density = self.density0 * density
+        self.K = self.K0 * density
+        # self.stress_map = self.stress_map0 * density
 
     
 class TriangleElement(Element):
@@ -401,6 +433,7 @@ class TrussElement(Element):
         self.node_connectivity[node_map[1]] = [node_map[0]]
 
         self.midpoint = (nodes[0] + nodes[1])/2
+        self.num_nodes = 2
 
 
     '''
@@ -448,9 +481,13 @@ class TrussElement(Element):
     '''
     Calculates the local load vector for self-weight.
     '''
-    def calc_self_weight(self, g):
-        rho = self.material.density
-        self.r_g_local = rho*self.area*g*self.l*np.array([0, -1/2, 0, -1/2]).reshape((-1,1))
+    def calc_self_weight(self, g, rotation=0):
+        density = self.material.density
+        self.calc_l()
+        c = np.cos(-rotation)
+        s = np.sin(-rotation)
+        rotation_matrix = np.array([[c, -s], [s, c]])
+        self.r_g_local = density*self.area*g*self.l*rotation_matrix.dot(1/2*np.array([[0., 0.], [-1., -1.]])).reshape((-1,1), order='F')
         return self.r_g_local
 
 
@@ -502,4 +539,5 @@ class TrussElement(Element):
         self.calc_k()
         self.assemble_stress_map()
         self.assemble_midpoint_map()
+        self.calc_l()
         self.calc_volume()

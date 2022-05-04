@@ -20,10 +20,10 @@ path_name = 'CAD/'
 file_name = 'box_10x5x1.stp'
 geo = DesignGeometry(path_name + file_name)
 
-aluminum = IsotropicMaterial(name='aluminum', E=68e9, nu=0.36)
-pla = IsotropicMaterial(name='pla', E=4.1e9)
-nylon = IsotropicMaterial(name='nylon', E=2.7e9, nu = 0.39)
-thickness = 0.1
+# aluminum = IsotropicMaterial(name='aluminum', E=68e9, nu=0.36)
+# pla = IsotropicMaterial(name='pla', E=4.1e9)
+nylon = IsotropicMaterial(name='nylon', E=2.7e9, nu = 0.39, density=115.)
+thickness = 0.04
 
 
 ''' Inputs '''
@@ -65,14 +65,14 @@ top_edge_curve1 = geo.perform_linear_interpolation(point_01_ptset, point_11_ptse
 bot_edge_curve1 = geo.perform_linear_interpolation(point_00_ptset, point_10_ptset, num_pts_00_10)
 left_edge_curve1 = geo.perform_linear_interpolation(point_00_ptset, point_01_ptset, num_pts_00_01)
 right_edge_curve1 = geo.perform_linear_interpolation(point_10_ptset, point_11_ptset, num_pts_00_01)
-cantilever_pointset = geo.perform_2d_transfinite_interpolation(bot_edge_curve1, top_edge_curve1, left_edge_curve1, right_edge_curve1)
+quadrotor_2d_pointset = geo.perform_2d_transfinite_interpolation(bot_edge_curve1, top_edge_curve1, left_edge_curve1, right_edge_curve1)
 
-cantilever_mesh = Mesh(f'cantilever_mesh_{NODES_PER_LENGTH}')
+quadrotor_2d_mesh = Mesh(f'quadrotor_2d_mesh_{NODES_PER_LENGTH}')
 
 geo.assemble()
 geo.evaluate()
 
-mesh_nodes = cantilever_pointset.physical_coordinates.reshape(cantilever_pointset.shape)
+mesh_nodes = quadrotor_2d_pointset.physical_coordinates.reshape(quadrotor_2d_pointset.shape)
 
 # # Plot mesh
 # vp = Plotter(axes=1)
@@ -97,13 +97,75 @@ for u in range(mesh_nodes.shape[0]-1):
 
         elements.append(QuadElement(plane_stress_or_plane_strain, nodes, node_map, nylon, thickness))
 
-mesh = UnstructuredMesh(name='cantilever_mesh', nodes=cantilever_pointset.physical_coordinates[:,:2], elements=elements)
+mesh = UnstructuredMesh(name='quadrotor_2d_mesh', nodes=quadrotor_2d_pointset.physical_coordinates[:,:2], elements=elements)
+
+rotor_mass = 0.064 + 0.01786    # kg
+battery_mass = 0.529    # kg
+
+left_motor_point_mass = []
+x_bounds = np.array([-0.001, 0.031])
+y_bounds = np.array([0.09, 0.11])
+mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
+mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
+mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
+mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
+mask_x = np.logical_and(mask_x1, mask_x2)
+mask_y = np.logical_and(mask_y1, mask_y2)
+mask = np.logical_and(mask_x, mask_y)
+
+# load_nodes = mesh.nodes[mask]
+load_node_indices = np.argwhere(mask)
+load = rotor_mass
+load_per_node = load/load_node_indices.shape[0]
+for node in load_node_indices[:,0]:
+    left_motor_point_mass.append((node, load_per_node))
+
+right_motor_point_mass = []
+x_bounds = np.array([0.469, .501])
+y_bounds = np.array([0.09, 0.11])
+mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
+mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
+mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
+mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
+mask_x = np.logical_and(mask_x1, mask_x2)
+mask_y = np.logical_and(mask_y1, mask_y2)
+mask = np.logical_and(mask_x, mask_y)
+
+# load_nodes = mesh.nodes[mask]
+load_node_indices = np.argwhere(mask)
+load = rotor_mass
+load_per_node = load/load_node_indices.shape[0]
+for node in load_node_indices[:,0]:
+    right_motor_point_mass.append((node, load_per_node))
+
+mesh.add_point_masses(left_motor_point_mass)
+mesh.add_point_masses(right_motor_point_mass)
+
+battery_point_mass = []
+x_bounds = np.array([0.2, .3])
+y_bounds = np.array([0.09, 0.11])
+mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
+mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
+mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
+mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
+mask_x = np.logical_and(mask_x1, mask_x2)
+mask_y = np.logical_and(mask_y1, mask_y2)
+mask = np.logical_and(mask_x, mask_y)
+
+# load_nodes = mesh.nodes[mask]
+load_node_indices = np.argwhere(mask)
+load = battery_mass
+load_per_node = load/load_node_indices.shape[0]
+for node in load_node_indices[:,0]:
+    battery_point_mass.append((node, load_per_node))
+
+mesh.add_point_masses(left_motor_point_mass)
+mesh.add_point_masses(right_motor_point_mass)
+mesh.add_point_masses(battery_point_mass)
 
 
-cantilever_prob_bc = []
-# for i in range(mesh_nodes.shape[1]):
-#     cantilever_prob_bc.append((i, 0, 0))
-#     cantilever_prob_bc.append((i, 1, 0))
+
+quadrotor_2d_prob_bc = []
 
 x_bounds = np.array([0.24, 0.26])
 y_bounds = np.array([-5.01, 5.01])
@@ -117,96 +179,28 @@ mask = np.logical_and(mask_x, mask_y)
 
 bc_node_indices = np.argwhere(mask)
 for node in bc_node_indices[:,0]:
-    cantilever_prob_bc.append((node, 0, 0))
-    cantilever_prob_bc.append((node, 1, 0))
+    quadrotor_2d_prob_bc.append((node, 0, 0))
+    quadrotor_2d_prob_bc.append((node, 1, 0))
 
-print('bc_nodes', bc_node_indices)
-''' Load case 2: Distributed load on motor mount'''
-# x_bounds = np.array([8.99, 10.01])
-# y_bounds = np.array([2.49, 2.51])
-# mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
-# mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
-# mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
-# mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
-# mask_x = np.logical_and(mask_x1, mask_x2)
-# mask_y = np.logical_and(mask_y1, mask_y2)
-# mask = np.logical_and(mask_x, mask_y)
-
-# load_nodes = mesh.nodes[mask]
-# load_node_indices = np.argwhere(mask)
-# load = np.array([0., 1.e2])
-# # load = np.array([1.e7, 0.])
-# load_per_node = load/load_node_indices.shape[0]
-# cantilever_prob_loads = []
-# for node in load_node_indices[:,0]:
-#     cantilever_prob_loads.append((node, load_per_node))
-
-# x_bounds = np.array([-0.01, .01])
-# y_bounds = np.array([2.49, 2.51])
-# mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
-# mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
-# mask_y1 = mesh.nodes[:,1] >= y_bounds[0]
-# mask_y2 = mesh.nodes[:,1] <= y_bounds[1]
-# mask_x = np.logical_and(mask_x1, mask_x2)
-# mask_y = np.logical_and(mask_y1, mask_y2)
-# mask = np.logical_and(mask_x, mask_y)
-
-# load_nodes = mesh.nodes[mask]
-# load_node_indices = np.argwhere(mask)
-# load = np.array([0., 1.e2])
-# # load = np.array([1.e7, 0.])
-# load_per_node = load/load_node_indices.shape[0]
-# for node in load_node_indices[:,0]:
-#     cantilever_prob_loads.append((node, load_per_node))
-
-# load_cases.append(cantilever_prob_loads)
-
-
-''' Run for each load case'''
-# for i, load_case in enumerate(load_cases):
-    # print(f'------load case {i}-----')
-    # cantilever_prob = FEA(mesh=mesh, loads=load_case, boundary_conditions=cantilever_prob_bc)
-    # cantilever_prob.setup()
-    # cantilever_prob.evaluate()
-    # print('___Displacements___')
-    # U_reshaped = cantilever_prob.U.reshape((cantilever_prob.num_nodes, -1))
-    # print('max U_x: ', max(abs(U_reshaped[:,0])))
-    # print('max U_y: ', max(abs(U_reshaped[:,1])))
-    # cantilever_prob.plot_displacements()
-    # cantilever_prob.calc_stresses()
-    # print('___Stresses___')
-    # print('max sigma_xx: ', np.max(cantilever_prob.stresses_per_point[:,0].reshape((-1,))))
-    # print('max sigma_yy: ', np.max(cantilever_prob.stresses_per_point[:,1].reshape((-1,))))
-    # print('max sigma_xy: ', np.max(cantilever_prob.stresses_per_point[:,2].reshape((-1,))))
-    # print('min sigma_xx: ', np.min(cantilever_prob.stresses_per_point[:,0].reshape((-1,))))
-    # print('min sigma_yy: ', np.min(cantilever_prob.stresses_per_point[:,1].reshape((-1,))))
-    # print('min sigma_xy: ', np.min(cantilever_prob.stresses_per_point[:,2].reshape((-1,))))
-    # cantilever_prob.plot_stresses('xx')
-    # cantilever_prob.plot_stresses('yy')
-    # cantilever_prob.plot_stresses('xy')
-''' End of static case'''
-
-# disps = cantilever_prob.U_f
-# velocities = np.zeros_like(disps)
-# steady_sol = np.append(disps, velocities).reshape((-1, 1))
-# print(load_cases)
-# load_cases = []
-# cantilever_prob_loads = [(0, np.array([0., 0.]))]
-# load_cases.append(cantilever_prob_loads)
 
 t0 = 0.
-tf = 0.025
-nt = np.rint((tf-t0)*1000).astype(int) # To see displacement
-# nt = (tf-t0)*100000      # to see stresses (time step must be small too)
-t_eval = np.linspace(t0, tf, nt+1)
-load_cases = []
+# tf = 0.0001
+tf = 10.
+# nt = np.rint((tf-t0)*100).astype(int) # To see displacement
+# nt = np.rint((tf-t0)*1000).astype(int) # To see displacement
+# nt = np.rint((tf-t0)*1000000).astype(int)      # to see stresses (time step must be small too)
+# t_eval = np.linspace(t0, tf, nt+1)
+# dynamic_loads = []
+input_loads = [[np.array([0., 1.e2]), np.array([0., 0.2e1]), np.array([0., 1.e2]), np.array([0., 3.4e2])],
+                [np.array([0., 1.2e2]), np.array([0., 0.e1]), np.array([0., 1.4e2]), np.array([0., 3.e2])]]
+
+# t_loads = [0., tf/4, tf/2, tf*3/4]
+t_loads = np.linspace(t0, tf*3/4, 4)
+
+
 dynamic_loads = []
-input_loads = [[np.array([0., 1.e2]), np.array([0., 0.e1]), np.array([0., 1.e2]), np.array([0., 3.e2])],
-                [np.array([0., 1.e2]), np.array([0., 0.e1]), np.array([0., 1.e2]), np.array([0., 3.e2])]]
-t_loads = [0., tf/4, tf/2, tf*3/4]
-num_loads = len(input_loads)
 for i, t in enumerate(t_loads):
-    # t = t_loads[i]
+    # t = time[i]
     dynamic_loads_per_time = []
     x_bounds = np.array([-0.001, 0.031])
     y_bounds = np.array([0.09, 0.11])
@@ -218,7 +212,7 @@ for i, t in enumerate(t_loads):
     mask_y = np.logical_and(mask_y1, mask_y2)
     mask = np.logical_and(mask_x, mask_y)
 
-    load_nodes = mesh.nodes[mask]
+    # load_nodes = mesh.nodes[mask]
     load_node_indices = np.argwhere(mask)
     load = input_loads[0][i]
     load_per_node = load/load_node_indices.shape[0]
@@ -235,7 +229,7 @@ for i, t in enumerate(t_loads):
     mask_y = np.logical_and(mask_y1, mask_y2)
     mask = np.logical_and(mask_x, mask_y)
 
-    load_nodes = mesh.nodes[mask]
+    # load_nodes = mesh.nodes[mask]
     load_node_indices = np.argwhere(mask)
     load = input_loads[1][i]
     load_per_node = load/load_node_indices.shape[0]
@@ -243,40 +237,48 @@ for i, t in enumerate(t_loads):
         dynamic_loads_per_time.append((node, load_per_node))
 
     dynamic_loads.append([t, dynamic_loads_per_time])
-load_cases.append(dynamic_loads)
 
-''' Run dynamics for each load case'''
-for i, load_case in enumerate(load_cases):
-    print(f'------load case {i}-----')
-    cantilever_prob = FEA(mesh=mesh, boundary_conditions=cantilever_prob_bc)
-    cantilever_prob.setup_dynamics()
-    cantilever_prob.evaluate_dynamics(loads=load_case, t_eval=t_eval)
-    U_reshaped = cantilever_prob.U_per_dim_per_time
+# from dynamic_fea.io.import_loads import import_loads
+# dynamic_loads, t_eval = import_loads(mesh=mesh, file_path='quadrotor_input_profile.json')
+# print(dynamic_loads)
+# t_eval = dynamic_loads[:][0]
+t_eval = np.linspace(0., 10., 101)
 
-    stresses = cantilever_prob.evaluate_dynamic_stresses()
-    # cantilever_prob.plot(stress_type='xx', time_step=-1)
-    # cantilever_prob.plot(stress_type='yy', time_step=-1)
-    # cantilever_prob.plot(stress_type='xy', time_step=-1)
-    # cantilever_prob.plot(stress_type='yy', dof=-1)
-    # cantilever_prob.plot(dof=[-1, -3], show_dislpacements=True)
-    # cantilever_prob.plot(dof=[-1, -3], show_dislpacements=True, stress_type='yy')
-    cantilever_prob.plot(show_dislpacements=True, show_connections=True, stress_type='xx', video_file_name='displacement_animation.avi', video_fps=20, show=False)
+''' Run dynamics'''
+# for i, load_case in enumerate(load_cases):
+print(f'------load case-----')
+quadrotor_2d_prob = FEA(mesh=mesh, boundary_conditions=quadrotor_2d_prob_bc)
+quadrotor_2d_prob.setup_dynamics()
+quadrotor_2d_prob.apply_self_weight(g=9.81)
+quadrotor_2d_prob.evaluate_dynamics(loads=dynamic_loads, t_eval=t_eval)
+U_reshaped = quadrotor_2d_prob.U_per_dim_per_time
 
-    # print('___Displacements___')
-    # print(cantilever_prob.U)
-    # print(cantilever_prob.U.shape)
-    # print('max U_x: ', max(abs(U_reshaped[:,0])))
-    # print('max U_y: ', max(abs(U_reshaped[:,1])))
-    # print('___Stresses___')
-    # print('max sigma_xx: ', max(cantilever_prob.stresses[:,:,0].reshape((-1,))))
-    # print('max sigma_yy: ', max(cantilever_prob.stresses[:,:,1].reshape((-1,))))
-    # print('max sigma_xy: ', max(cantilever_prob.stresses[:,:,2].reshape((-1,))))
-    # print('min sigma_xx: ', min(cantilever_prob.stresses[:,:,0].reshape((-1,))))
-    # print('min sigma_yy: ', min(cantilever_prob.stresses[:,:,1].reshape((-1,))))
-    # print('min sigma_xy: ', min(cantilever_prob.stresses[:,:,2].reshape((-1,))))
+stresses = quadrotor_2d_prob.evaluate_stresses()
+quadrotor_2d_prob.plot(stress_type='xx', time_step=-1)
+quadrotor_2d_prob.plot(stress_type='yy', time_step=-1)
+quadrotor_2d_prob.plot(stress_type='xy', time_step=-1)
+quadrotor_2d_prob.plot(stress_type='yy', dof=-1)
+quadrotor_2d_prob.plot(dof=[-1, -3], show_dislpacements=True)
+quadrotor_2d_prob.plot(dof=[-1, -3], show_dislpacements=True, stress_type='yy')
+quadrotor_2d_prob.plot(stress_type='vm', time_step=-1)
+quadrotor_2d_prob.plot(stress_type='avm', time_step=-1)
+quadrotor_2d_prob.plot(stress_type='vm', dof=-1)
+quadrotor_2d_prob.plot(stress_type='avm', dof=-1)
+# quadrotor_2d_prob.plot(show_dislpacements=True, show_connections=False, stress_type='xx', video_file_name='displacement_animation.avi', video_fps=20, show=False)
+quadrotor_2d_prob.plot_rigid_body_displacement()
+quadrotor_2d_prob.plot_rigid_body_displacement(x_axis='t', y_axis='y')
+quadrotor_2d_prob.plot_rigid_body_displacement(x_axis='t', y_axis='x')
+quadrotor_2d_prob.plot_rigid_body_displacement(x_axis='t', y_axis='rot_z')
 
-
-# plt.plot(t, cantilever_prob.rigid_body_disp[1,:].reshape((-1,)), '-bo')
-# plt.show()
-
-# cantilever_prob.plot_dynamics(show_plots=False, video_file_name='displacement_animation.avi', fps=20)
+# print('___Displacements___')
+# print(quadrotor_2d_prob.U)
+# print(quadrotor_2d_prob.U.shape)
+# print('max U_x: ', max(abs(U_reshaped[:,0])))
+# print('max U_y: ', max(abs(U_reshaped[:,1])))
+# print('___Stresses___')
+# print('max sigma_xx: ', max(quadrotor_2d_prob.stresses[:,:,0].reshape((-1,))))
+# print('max sigma_yy: ', max(quadrotor_2d_prob.stresses[:,:,1].reshape((-1,))))
+# print('max sigma_xy: ', max(quadrotor_2d_prob.stresses[:,:,2].reshape((-1,))))
+# print('min sigma_xx: ', min(quadrotor_2d_prob.stresses[:,:,0].reshape((-1,))))
+# print('min sigma_yy: ', min(quadrotor_2d_prob.stresses[:,:,1].reshape((-1,))))
+# print('min sigma_xy: ', min(quadrotor_2d_prob.stresses[:,:,2].reshape((-1,))))
