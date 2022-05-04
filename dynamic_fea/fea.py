@@ -1336,7 +1336,7 @@ class FEA:
     '''
     def plot_topology(self, densities):
         self.plot(show=False)
-        # self.plot_displacements(show_nodes=False, show_connections=True, show_undeformed=True, show=False)
+        self.plot_displacements(show_nodes=False, show_connections=True, show_undeformed=True, show=False)
         densities[densities > 1] = 1.
         densities[densities < 1.e-3] = 1.e-3
         plt.scatter(self.element_midpoints_undeformed[0,:,0], self.element_midpoints_undeformed[0,:,1], c=densities, cmap='gray_r')
