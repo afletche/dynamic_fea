@@ -11,6 +11,7 @@ from dynamic_fea.design_representation import FERepresentation
 
 from optimization_framework.optimization_problem import OptimizationProblem
 from optimization_framework.optimizers.gradient_descent_optimizer import GradientDescentOptimizer
+from optimization_framework.optimizers.finite_difference import finite_difference
 
 from lsdo_kit.design.design_geometry.design_geometry import DesignGeometry
 from lsdo_kit.simulation.mesh.mesh import Mesh
@@ -48,8 +49,8 @@ Calcualtes the number of divisions
 # bot_edge_length = np.linalg.norm(point_10-point_00)
 # num_pts_00_10 = [np.rint(bot_edge_length*NODES_PER_LENGTH).astype(int)]
 # num_pts_00_01 = [np.rint(left_edge_length*NODES_PER_LENGTH).astype(int)]
-num_pts_00_10 = 11
-num_pts_00_01 = 10
+num_pts_00_10 = 3
+num_pts_00_01 = 3
 
 # '''Project points'''
 # point_00_ptset, top_right_coord = geo.project_points(point_00, projection_direction = down_direction)
@@ -197,8 +198,8 @@ tf = 0.0001
 # nt = np.rint((tf-t0)*1000000).astype(int)      # to see stresses (time step must be small too)
 # t_eval = np.linspace(t0, tf, nt+1)
 # dynamic_loads = []
-input_loads = [[np.array([0., 10.01e0]), np.array([0., 6.e0]), np.array([0., 20.e0]), np.array([0., 6.e0]), np.array([0., 6.01e0])],
-                [np.array([0., 10.e0]), np.array([0., 6.01e0]), np.array([0., 20.e0]), np.array([0., 6.01e0]), np.array([0., 6.e0])]]
+input_loads = [[np.array([0., 10.01e2]), np.array([0., 6.e0]), np.array([0., 20.e0]), np.array([0., 6.e0]), np.array([0., 6.01e0])],
+                [np.array([0., 10.e2]), np.array([0., 6.01e0]), np.array([0., 20.e0]), np.array([0., 6.01e0]), np.array([0., 6.e0])]]
 
 # t_loads = [0., tf/4, tf/2, tf*3/4]
 t_loads = np.linspace(t0, tf*4/5, 5)
@@ -251,7 +252,7 @@ static_loads = dynamic_loads[0][1]
 # print(dynamic_loads)
 # t_eval = dynamic_loads[:][0]
 # t_eval = np.linspace(0., 10., 101)
-t_eval = np.linspace(0., 1e-5, 6)
+t_eval = np.linspace(0., 1e-6, 6)
 
 ''' Run dynamics'''
 # for i, load_case in enumerate(load_cases):
@@ -259,10 +260,18 @@ quadrotor_2d_prob = FEA(mesh=mesh, boundary_conditions=quadrotor_2d_prob_bc)
 quadrotor_2d_prob.apply_loads(static_loads)
 quadrotor_2d_prob.setup_dynamics()
 quadrotor_2d_prob.apply_self_weight(g=9.81)
-# quadrotor_2d_prob.evaluate_dynamics(loads=dynamic_loads, t_eval=t_eval)
-# U_reshaped = quadrotor_2d_prob.U_per_dim_per_time
 
-# stresses = quadrotor_2d_prob.evaluate_stresses()
+quadrotor_2d_prob.setup()
+
+def evaluate_fd(x0):
+    f = quadrotor_2d_prob.evaluate(x0)
+    return (quadrotor_2d_prob.K.dot(quadrotor_2d_prob.U) - quadrotor_2d_prob.F)[-1]
+x0 = np.ones(len(elements),)*0.06
+# x0 = np.array([0.8, 0.6, 0.4, 0.2, 0.02, 0.95, 0.9, 0.8, 0.02, 0.02, 0.05, 0.9])
+print('FD', finite_difference(evaluate_fd, x0, h=1e-6))
+print('ANALYTIC', quadrotor_2d_prob.evaluate_analytic_test(x0))
+
+exit()
 
 quadrotor_2d_optimization = OptimizationProblem()
 steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-3)
@@ -280,7 +289,7 @@ steepest_descent_optimizer.set_initial_guess(x0)
 # densities = [0.04555958, 0.05253258, 0.05410376, 0.06907991, 0.02608745, 0.06844144, 0.06905254, 0.02607398, 0.06841427, 0.04554772, 0.0525184,  0.05409047]
 # quadrotor_2d_prob.plot_topology(densities)
 # exit()
-quadrotor_2d_optimization.run(line_search='FD', grad_norm_abs_tol=1.e-2, delta_x_abs_tol=1e-5, updating_penalty=True, max_iter=200)
+quadrotor_2d_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-2, delta_x_abs_tol=1e-5, updating_penalty=True, max_iter=200)
 # quadrotor_2d_optimization.run(grad_norm_abs_tol=1e-4, delta_x_abs_tol=1e-11, updating_penalty=True, max_iter=300)
 solution = quadrotor_2d_optimization.report(history=True)
 quadrotor_2d_optimization.plot()

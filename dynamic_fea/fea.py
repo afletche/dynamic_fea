@@ -35,7 +35,7 @@ class FEA:
         self.set_mesh(mesh)
         
         # self.initialize_ode() Moved into set_mesh method
-
+        self.applied_loads = []
         self.apply_loads(loads)
         self.apply_boundary_conditions(boundary_conditions)
 
@@ -128,11 +128,10 @@ class FEA:
     - nodes  : numpy.ndarray (nf,): The nodes where the forces are applied
     - forces : numpy.ndarray (nf,3): The forces applied to the corresponding nodes
     '''
-    def apply_loads(self, loads):
-        if len(loads) != 2:
-            Exception("Please input a 'load' of the form [nodes, forces]")
-        
+    def apply_loads(self, loads):        
         for load in loads:
+            if len(load) != 2:
+                Exception("Please input a 'load' of the form (nodes, forces) into the loads List")
             node = load[0]
             force = load[1]
             for i in range(len(force)):
@@ -140,11 +139,14 @@ class FEA:
                     continue
                 load_component_dof = node*self.dimensions_spanned+i
                 if self.F[load_component_dof] != 0:
-                    self.F[load_component_dof] = self.F[load_component_dof].data + force[i]
-                    self.F_body_fixed[load_component_dof] = self.F_body_fixed[load_component_dof].data + force[i]
+                    self.F[load_component_dof] += np.array([force[i]])
+                    self.F_body_fixed[load_component_dof] += np.array([force[i]])
                 else:
                     self.F[load_component_dof] = force[i]
                     self.F_body_fixed[load_component_dof] = force[i]
+
+        if loads != []:
+            self.applied_loads = loads
 
 
     '''
@@ -160,7 +162,6 @@ class FEA:
 
         self.F[odd_indices] -= (mass_dof_array*g).reshape((-1, 1))
         self.F_earth_fixed[odd_indices] -= (mass_dof_array*g).reshape((-1, 1))
-
 
         self.use_self_weight = True
         self.g = g
@@ -296,6 +297,7 @@ class FEA:
         end_index_stresses = 0
         start_index_eval_points = 0
         end_index_eval_points = 0
+        num_quad_stress_points = 0
         for element in self.mesh.elements:
             local_stress_map = element.stress_map
             element_dofs = self.nodes_to_dof_indices(element.node_map)
@@ -318,6 +320,8 @@ class FEA:
                 self.stress_eval_points_indices['yy'] = np.append(self.stress_eval_points_indices['yy'], indices)
                 self.stress_eval_points_indices['xy'] = np.append(self.stress_eval_points_indices['xy'], indices)
                 self.stress_eval_points_map[np.ix_(indices, element.node_map)] = element.integration_coordinates_map
+
+                num_quad_stress_points += num_integration_points
             elif type(element) is TrussElement:
                 # num_eval_points = 1 # the one element between the 2 nodes.
                 num_stress_types = 1
@@ -332,6 +336,11 @@ class FEA:
 
             start_index_stresses = end_index_stresses
             start_index_eval_points = end_index_eval_points
+
+        # self.stress_averaging_map = np.zeros((int(num_quad_stress_points/4), num_quad_stress_points))
+        # for i in range(int(num_quad_stress_points/4)):
+        #     for j in np.arange(4*i, 4*(i+1)):
+        #         self.stress_averaging_map[i,j] = 1/4
 
 
     # '''
@@ -410,6 +419,14 @@ class FEA:
         self.K_fp = self.K[np.ix_(self.free_dof, self.prescribed_dof)]
         self.K_pf = self.K_fp.T
         self.K_pp = self.K[np.ix_(self.prescribed_dof, self.prescribed_dof)]
+        self.assemble_mass_matrix()
+        self.assemble_stress_map()
+
+        self.reset_loads()
+        self.apply_loads(self.applied_loads)
+        self.apply_self_weight(self.g)
+        self.F_f = self.F[self.free_dof]
+        self.F_p = self.F[self.prescribed_dof]    # don't know yet
 
 
     '''
@@ -420,55 +437,39 @@ class FEA:
         - Strain energy
     '''
     # def evaluate(self, x, rho=0.):
-    #     # weight = np.sum(abs(x))
+    #     # min_density = 1.e-2
+    #     # max_density = 1.
+    #     # densities_too_high = x > max_density
+    #     # x[densities_too_high] = max_density
+    #     # densities_too_low = x < min_density
+    #     # x[densities_too_low] = min_density
+
     #     weight = x.dot(x)
 
-    #     self.mesh.evaluate_topology(x, penalization_type='SIMP')
-    #     self.assemble_k()
-    #     self.assemble_mass_matrix()
-    #     self.K_ff = self.K[np.ix_(self.free_dof, self.free_dof)]
-    #     self.K_fp = self.K[np.ix_(self.free_dof, self.prescribed_dof)]
-    #     self.K_pf = self.K_fp.T
-    #     self.K_pp = self.K[np.ix_(self.prescribed_dof, self.prescribed_dof)]
-    #     self.F_f = self.F[self.free_dof]
-    #     self.F_p = self.F[self.prescribed_dof]    # don't know yet
-    #     self.assemble_stress_map()
+    #     self.evaluate_topology(x, simp_penalization_factor=4, ramp_penalization_factor=None, filter_radius=None)
+    #     # self.apply_self_weight(g=9.81)        This is currently reapplying self weight every time, so it becomes insanely heavy.
 
     #     self.evaluate_static()
-    #     self.evaluate_stresses()
-    #     self.evaluate_strain_energy()
-    #     # self.plot(stress_type='avm', time_step=0)
-    #     odd_indices = np.arange(1, self.num_total_dof, 2)
-    #     self.total_mass = self.M[np.ix_(odd_indices, odd_indices)].sum()
+    #     # self.evaluate_stresses()
+    #     # self.evaluate_strain_energy()
+    #     stress_constraint = self.evaluate_stress_constraint(x, eta=1., p=10., epsilon=1e-1)
+    #     strain_energy_constraint = self.evaluate_strain_energy_constraint()
 
-    #     # print('displacement: ', self.U)
-    #     # print('K', self.K)
-    #     # print('strain energy', self.strain_energy)
-        
-    #     sigma_yield = self.mesh.material.sigma_y
-    #     avm_stress_constraint = (self.averaged_von_mises_stresses/sigma_yield - 1).reshape((-1,))
-    #     avm_stress_penalty_scaling_factors = np.ones_like(avm_stress_constraint)*1e-0
-    #     # print('von mises', np.max(self.averaged_von_mises_stresses))
-
-    #     max_strain_energy = 0.8418*self.total_mass**4 - 1.644*self.total_mass**3 + 1.244*self.total_mass**2 - 0.313*self.total_mass + 0.02661
-    #     strain_energy_constraint = self.strain_energy - max_strain_energy
-    #     # print('strain energy constraint: ', strain_energy_constraint)
+    #     # avm_stress_penalty_scaling_factor = 1.
+    #     avm_stress_penalty_scaling_factor=0.
     #     strain_energy_penalty_scaling_factor = 1.
-
-    #     # print('constraint', avm_stress_constraint)
+    #     # strain_energy_penalty_scaling_factor = 0.
 
     #     constraint_vector = np.array([])
-    #     constraint_vector = np.append(constraint_vector, avm_stress_constraint)
+    #     constraint_vector = np.append(constraint_vector, stress_constraint)
     #     constraint_vector = np.append(constraint_vector, strain_energy_constraint)
     #     penalty_scaling_factors_vector = np.array([])
-    #     penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factors)
+    #     penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factor)
     #     penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, strain_energy_penalty_scaling_factor)
 
     #     active_contraints = constraint_vector[constraint_vector > 0]
     #     active_penalty_scaling_factors = penalty_scaling_factors_vector[constraint_vector > 0]
     #     active_penalty_scaling_matrix = np.diag(active_penalty_scaling_factors)
-
-    #     # print('active penalty', active_penalty_scaling_factors)
 
     #     if active_contraints.size == 0:
     #         f = weight
@@ -476,6 +477,9 @@ class FEA:
     #         f = weight + 1/2*(active_contraints.T).dot(active_penalty_scaling_matrix).dot(active_contraints)
     #         # print('weight', weight)
     #         # print('penalty', 1/2*(active_contraints.T).dot(active_penalty_scaling_matrix).dot(active_contraints))
+    #     f = strain_energy_constraint
+    #     # f = self.F[-1,0]
+    #     # print(self.strain_energy_constraint)
     #     c = np.array([])
     #     # df_dx = self.evaluate_gradient(x=x, rho=rho)
     #     df_dx = None
@@ -488,138 +492,191 @@ class FEA:
     #     model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
     #     return model_outputs
 
-    # def evaluate_gradient(self, x, rho=0.):
-    #     # lambda_p = zeros
-    #     adjoint_term = sps.lil_matrix((1,self.num_total_dof))
-    #     L = sps.lil_matrix((self.num_total_dof,1))
-    #     # output_dof = self.prescribed_dof[-3:]
-    #     output_dof = self.prescribed_dof[-1]
-    #     L[output_dof] = -1/100
-    #     L_f = L[np.ix_(self.free_dof)]
-    #     L_f = L_f.tocsc()
-    #     adjoint_term_f = spsolve(self.K_ff, -L_f)
-    #     adjoint_term[:,np.ix_(self.free_dof)] = adjoint_term_f
-
-    #     mass_map = np.zeros((self.num_elements,))
-    #     pR_parea = sps.lil_matrix((self.num_total_dof, self.num_elements))
-    #     for i, element in enumerate(self.mesh.elements):
-    #         K = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
-    #         element_sensitivity = element.K/element.area
-    #         element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
-    #         K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-    #         K = K.tocsc()
-    #         pR_parea[:, i] = K.dot(-self.U)
-
-    #         mass_map[i] = element.l*element.material.density
-    #     pR_parea = pR_parea.tocsc()
-
-    #     # additional term from penalty
-    #     total_mass = mass_map.dot(x)
-    #     pf_pa = rho*(self.initial_mass - total_mass)*-mass_map
-        
-    #     df_dt = adjoint_term.dot(pR_parea).todense() + pf_pa
-    #     gradient = np.zeros((self.num_elements))
-    #     for i in range(len(gradient)):
-    #         gradient[i] = df_dt[0,i]
-    #     # gradient = df_dt.reshape((-1,))
-    #     # print(gradient)
-    #     return gradient
-
-    '''
-    Evaluation function for compliant mechanism topopology optimization.
-    '''
-    def evaluate(self, x, rho=0.):
-        densities_too_high = x > 1
-        x[densities_too_high] = 1.
-        densities_too_low = x < 1.e-3
-        x[densities_too_low] = 1.e-3
-
-
-        self.mesh.evaluate_topology(x, penalization_type='SIMP')
-        self.assemble_k()
-        self.K_ff = self.K[np.ix_(self.free_dof, self.free_dof)]
-        self.K_fp = self.K[np.ix_(self.free_dof, self.prescribed_dof)]
-        self.K_pf = self.K_fp.T
-        self.K_pp = self.K[np.ix_(self.prescribed_dof, self.prescribed_dof)]
-
-        self.evaluate_static()
-        # self.plot(time_step=0, show_dislpacements=True, show_connections=True)
+    def evaluate_stress_constraint(self, x, eta=1., p=10., epsilon=1.e-2):
         self.evaluate_stresses()
 
-        # self.plot(stress_type='vm')
-        # self.plot(stress_type='avm')
-        
-        # self.plot_topology(x)
         SF = 2.
         sigma_yield = self.mesh.material.sigma_y/SF
-        avm_stress_constraint = (self.averaged_von_mises_stresses/sigma_yield - 1).reshape((-1,))
-        avm_stress_penalty_scaling_factors = np.ones_like(avm_stress_constraint)*1e-0
-        # print('von mises', np.max(self.averaged_von_mises_stresses))
+        avm_stress_constraint_vector = ((x**eta)*self.averaged_von_mises_stresses/sigma_yield).reshape((-1,))
+        aggregated_stress_constraint = (((avm_stress_constraint_vector**(p/2)).dot(avm_stress_constraint_vector**(p/2))))**(1/p) - (1 + epsilon)
+        return aggregated_stress_constraint
 
-        constraint_vector = np.array([])
-        constraint_vector = np.append(constraint_vector, avm_stress_constraint)
-        penalty_scaling_factors_vector = np.array([])
-        penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factors)
+    def evaluate_stress_constraint_gradient(self, x, eta=1., p=10., epsilon=1.e-2):
+        stresses_vec = np.zeros((self.nt+1, 3, self.stresses_dict['xx'].shape[1]))
+        stresses_vec[:,0,:] = self.stresses_dict['xx']
+        stresses_vec[:,1,:] = self.stresses_dict['yy']
+        stresses_vec[:,2,:] = self.stresses_dict['xy']
 
-        active_contraints = constraint_vector[constraint_vector > 0]
-        active_penalty_scaling_factors = penalty_scaling_factors_vector[constraint_vector > 0]
-        active_penalty_scaling_matrix = np.diag(active_penalty_scaling_factors)
+        von_mises_map = np.array([
+            [1., -1/2, 0],
+            [-1/2, 1., 0],
+            [0., 0., 3.]
+        ])
+        m_dot_stresses = von_mises_map.dot(stresses_vec)
+        
+        von_mises_stresses = np.zeros((self.nt+1, self.stresses_dict['xx'].shape[1]))
+        averaged_von_mises_stresses = np.zeros((self.nt+1, int(self.stresses_dict['xx'].shape[1]/4)))
+        counter = 0
+        averaged_stress_index = 0
+        for i in range(self.stresses_dict['xx'].shape[1]):
+            for j in range(self.nt+1):
+                von_mises_stresses[j,i] = np.sqrt(stresses_vec[j,:,i].dot(m_dot_stresses[:,j,i]))
+                averaged_von_mises_stresses[j,averaged_stress_index] += von_mises_stresses[j,i]/4
 
-        # print('active penalty', active_penalty_scaling_factors)
+            counter += 1
+            if counter == 4:
+                averaged_stress_index += 1
+                counter = 0
 
-        L = np.zeros((self.F_p.shape[0]))
-        L[-14:] = 1.
-        # L[-1:] = 1.
-        # f = -self.F_p[-1]
-        f = L.dot(self.F_p)
-        # if active_contraints.size != 0:
-        #     f += 1/2*(active_contraints.T).dot(active_penalty_scaling_matrix).dot(active_contraints)
+        self.von_mises_stresses = von_mises_stresses
+        self.averaged_von_mises_stresses = averaged_von_mises_stresses
 
-        c = np.array([])
-        df_dx = self.evaluate_gradient(x=x, rho=rho)
-        # df_dx = None
-        self.h = 1e-2
-        dc_dx = dc_dx = np.array([])
-        d2f_dx2 = None
-        dl_dx = None
-        kkt = None
+        if self.mesh.density_filter is not None:
+            dc_dx = dc_dx.dot(self.mesh.density_filter)
+        
+        # return dc_dx
 
-        model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
-        return model_outputs
+    
+    def evaluate_strain_energy_constraint(self):
+        self.evaluate_strain_energy()
 
+        # print(self.strain_energy)
 
-    '''
-    NOTE: As with evaluate, this is hard coded for the compliant mechanism optimization.
-    '''
-    def evaluate_gradient(self, x, rho=0.):
-        adjoint_term = sps.lil_matrix((1, self.num_total_dof))
-        L = sps.lil_matrix((self.num_total_dof,1))
-        output_dof = self.prescribed_dof[-14:]
-        # output_dof = self.prescribed_dof[-1:]
-        L[output_dof] = 1
-        L_p = L[np.ix_(self.prescribed_dof)]
-        L_p = L_p.tocsc()
-        adjoint_term_f = spsolve(self.K_ff, -(self.K_fp).dot(L_p))
-        adjoint_term_p = L_p
-        adjoint_term[0,np.ix_(self.free_dof)] = adjoint_term_f.T
-        adjoint_term[0,np.ix_(self.prescribed_dof)] = adjoint_term_p.T
+        odd_indices = np.arange(1, self.num_total_dof, 2)
+        self.total_mass = self.M[np.ix_(odd_indices, odd_indices)].sum()
 
-        pR_px = sps.lil_matrix((self.num_total_dof, self.num_elements))
+        self.max_strain_energy = 0.8418*self.total_mass**4 - 1.644*self.total_mass**3 + 1.244*self.total_mass**2 - 0.313*self.total_mass + 0.02661
+        strain_energy_constraint = self.strain_energy - self.max_strain_energy
+        # strain_energy_constraint = self.strain_energy - 0.11275
+        strain_energy_constraint = np.max(strain_energy_constraint)
+
+        return strain_energy_constraint
+
+    def evaluate_strain_energy_gradient(self, x, simp_penalization_factor=3., ramp_penalization_factor=None, filter_radius=filter_radius):
+        self.evaluate_topology(x=x, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
+        self.evaluate_static()
+
+        pm_px = np.ones(len(x),)*self.mesh.material.density*self.mesh.elements[0].thickness*self.mesh.elements[0].area * simp_penalization_factor*x**(simp_penalization_factor-1)
+        pc_px = (4*0.8418*self.total_mass**3 - 3*1.644*self.total_mass**2 + 2*1.244*self.total_mass - 0.313)*pm_px
+
+        pR_px = sps.lil_matrix((self.num_free_dof, self.num_elements))
         for i, element in enumerate(self.mesh.elements):
-            K = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
-            element_sensitivity = element.K0*4*x[i]**3
+            pK_pRho = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+            element_sensitivity = element.K0*(simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
             element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
-            K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-            K = K.tocsc()
-            pR_px[:, i] = K.dot(self.U)
+            pK_pRho[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+            pKf_pRho = pK_pRho[np.ix_(self.free_dof, self.free_dof)]
+            # pK_pRho = pK_pRho.tocsc()
+            pKf_pRho = pKf_pRho.tocsc()
+            pR_px[:, i] = pKf_pRho.dot(self.U_f)
 
-        pR_px = pR_px.tocsc()
-        gradient = adjoint_term.dot(pR_px).todense()
+
+        pF_px = np.zeros((self.num_total_dof, len(x)))
+        for i, element in enumerate(self.mesh.elements):
+            element_sensitivity = -element.density0*element.volume*self.g/4 * (simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
+            element_dofs = self.nodes_to_dof_indices(element.node_map)
+            vertical_dofs = element_dofs[np.array([1, 3, 5, 7])]
+            pF_px[vertical_dofs, i] = element_sensitivity
+        pFf_px = pF_px[np.ix_(self.free_dof), :].reshape((self.num_free_dof, len(x)))
+
+        dCompliance_dx = self.U_f.dot(-pR_px/2 + pFf_px)
+        # dCompliance_dx = np.dot(-self.U_f.T, pR_px.todense())
+        dStrainEnergy_dx = dCompliance_dx
+        dc_dx = dStrainEnergy_dx - pc_px
+        # dc_dx = dStrainEnergy_dx
+
+        if self.mesh.density_filter is not None:
+            dc_dx = dc_dx.dot(self.mesh.density_filter)
+
+        return dc_dx
+
+
+    def evaluate_dynamic_strain_energy_gradient(self, x, simp_penalization_factor=3., ramp_penalization_factor=None, filter_radius=None, loads=[], t_eval=np.array([])):
+        self.evaluate_topology_dynamic(x=x, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
+        self.evaluate_dynamics(loads, t_eval, t0=0, x0=None)
+
+        pm_px = np.ones(len(x),)*self.mesh.material.density*self.mesh.elements[0].thickness*self.mesh.elements[0].area * simp_penalization_factor*x**(simp_penalization_factor-1)
+        pc_px = (4*0.8418*self.total_mass**3 - 3*1.644*self.total_mass**2 + 2*1.244*self.total_mass - 0.313)*pm_px
+
+        pR_px = sps.lil_matrix((self.num_free_dof, self.num_elements))
+        for i, element in enumerate(self.mesh.elements):
+            pK_pRho = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+            element_sensitivity = element.K0*(simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
+            element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
+            pK_pRho[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+            pKf_pRho = pK_pRho[np.ix_(self.free_dof, self.free_dof)]
+            # pK_pRho = pK_pRho.tocsc()
+            pKf_pRho = pKf_pRho.tocsc()
+            pR_px[:, i] = pKf_pRho.dot(self.U_f)
+
+        pF_px = np.zeros((self.num_total_dof, len(x)))
+        for i, element in enumerate(self.mesh.elements):
+            element_sensitivity = -element.density0*element.volume*self.g/4 * (simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
+            element_dofs = self.nodes_to_dof_indices(element.node_map)
+            vertical_dofs = element_dofs[np.array([1, 3, 5, 7])]
+            pF_px[vertical_dofs, i] = element_sensitivity
+        pFf_px = pF_px[np.ix_(self.free_dof), :].reshape((self.num_free_dof, len(x)))
+
+        dCompliance_dx = self.U_f.dot(-pR_px/2 + pFf_px)
+        # dCompliance_dx = np.dot(-self.U_f.T, pR_px.todense())
+        dStrainEnergy_dx = dCompliance_dx
+        dc_dx = dStrainEnergy_dx - pc_px
+        # dc_dx = dStrainEnergy_dx
+
+        if self.mesh.density_filter is not None:
+            dc_dx = dc_dx.dot(self.mesh.density_filter)
+
+        return dc_dx
+
+
+
+    # def evaluate_gradient(self, x, rho=0.):
+    #     gradient = 2*x
+
+    #     # Annoying thing to make gradient 1D
+    #     df_dx = np.zeros((len(x),))
+    #     for i in range(len(x)):
+    #         df_dx[i] = gradient[0,i]
+
+    #     # set boundary densities to 0 gradient
+    #     df_dx[x == 1.] = 0.
+    #     df_dx[x == 1.e-3] = 0.
+
+
+    #     # penalty portion
+    #     SF = 2.
+    #     sigma_yield = self.mesh.material.sigma_y/SF
+    #     avm_stress_constraint = (self.averaged_von_mises_stresses/sigma_yield - 1).reshape((-1,))
+    #     avm_stress_penalty_scaling_factors = np.ones_like(avm_stress_constraint)*1e-3
+    #     # print('von mises', np.max(self.averaged_von_mises_stresses))
+
+    #     constraint_vector = np.array([])
+    #     constraint_vector = np.append(constraint_vector, avm_stress_constraint)
+    #     penalty_scaling_factors_vector = np.array([])
+    #     penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factors)
+
+    #     active_contraints = constraint_vector[constraint_vector > 0]
+    #     active_penalty_scaling_factors = penalty_scaling_factors_vector[constraint_vector > 0]
+    #     gradient_penalty = np.zeros((len(x),))
+    #     gradient_penalty[constraint_vector > 0] = active_penalty_scaling_factors*active_contraints
+
+    #     if active_contraints.size != 0:
+    #         df_dx += gradient_penalty
+
+    #     return df_dx
+
+
+    def evaluate_analytic_test(self, x, rho=0.):
+        self.evaluate_topology(x=x)
+        self.evaluate_static()
+        
+        gradient = 2*x
 
         # Annoying thing to make gradient 1D
         df_dx = np.zeros((len(x),))
-        for i in range(len(x)):
-            df_dx[i] = gradient[0,i]
+        # for i in range(len(x)):
+        #     df_dx[i] = gradient[0,i]
+        df_dx = gradient
 
         # set boundary densities to 0 gradient
         df_dx[x == 1.] = 0.
@@ -627,66 +684,54 @@ class FEA:
 
 
         # penalty portion
-        SF = 2.
-        sigma_yield = self.mesh.material.sigma_y/SF
-        avm_stress_constraint = (self.averaged_von_mises_stresses/sigma_yield - 1).reshape((-1,))
-        avm_stress_penalty_scaling_factors = np.ones_like(avm_stress_constraint)*1e-3
-        # print('von mises', np.max(self.averaged_von_mises_stresses))
+        stress_constraint = self.evaluate_stress_constraint(x)      # TODO Probably need to feed in eta, p, etc.!!!!
+        stress_constraint_gradient = self.evaluate_stress_constraint_gradient(x)
+        strain_energy_constraint = self.evaluate_strain_energy_constraint()
+        strain_energy_constraint_gradient = self.evaluate_strain_energy_gradient(x, simp_penalization_factor=4.)
 
-        constraint_vector = np.array([])
-        constraint_vector = np.append(constraint_vector, avm_stress_constraint)
-        penalty_scaling_factors_vector = np.array([])
-        penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factors)
+        simp_penalization_factor=3.
 
-        active_contraints = constraint_vector[constraint_vector > 0]
-        active_penalty_scaling_factors = penalty_scaling_factors_vector[constraint_vector > 0]
-        gradient_penalty = np.zeros((len(x),))
-        gradient_penalty[constraint_vector > 0] = active_penalty_scaling_factors*active_contraints
-
-        # if active_contraints.size != 0:
-        #     df_dx += gradient_penalty
-
-        return df_dx
-
-
-
-    def evaluate_analytic_test(self, x, rho=0.):
-        # lambda_p = zeros
-        adjoint_term = sps.lil_matrix((1, self.num_total_dof))
-        L = sps.lil_matrix((self.num_total_dof,1))
-        # output_dof = self.prescribed_dof[-3:]
-        output_dof = self.prescribed_dof[-1]
-        L[output_dof] = -1/100
-        L_p = L[np.ix_(self.prescribed_dof)]
-        L_p = L_p.tocsc()
-        adjoint_term_f = -self.K_ff.dot(self.K_fp).dot(L_p)
-        adjoint_term_f = spsolve(self.K_ff, -(self.K_fp).dot(L_p))
-        adjoint_term_p = L_p
-        adjoint_term[0,np.ix_(self.free_dof)] = adjoint_term_f.T
-        adjoint_term[0,np.ix_(self.prescribed_dof)] = adjoint_term_p.T
-
-        pR_px = sps.lil_matrix((self.num_total_dof, self.num_elements))
+        # pR_px = sps.lil_matrix((self.num_total_dof, self.num_elements))
+        pR_px = sps.lil_matrix((self.num_free_dof, self.num_elements))
         for i, element in enumerate(self.mesh.elements):
-            K = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
-            element_sensitivity = element.K0*4*x[i]**3
+            pK_pRho = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+            element_sensitivity = element.K0*(simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
             element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
-            K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-            K = K.tocsc()
-            pR_px[:, i] = K.dot(self.U)
+            pK_pRho[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+            pKf_pRho = pK_pRho[np.ix_(self.free_dof, self.free_dof)]
+            pK_pRho = pK_pRho.tocsc()
+            pKf_pRho = pKf_pRho.tocsc()
+            pR_px[:, i] = pKf_pRho.dot(self.U_f)
 
-        pR_px = pR_px.tocsc()
-        gradient = adjoint_term.dot(pR_px)
-        # print('U', self.U)
-        # print('pR_px', pR_px.todense())
-        # print('gradient', gradient.todense())
-        
-        return gradient.todense()
+        # print(pR_px.todense())
+
+        # du_dx = -spsolve(self.K_ff, pR_px).todense()
+        # du_dx = -((sps.linalg.inv(self.K_ff).dot(self.F_f)).T.dot(pR_px)).todense()
+        du_dx = -(self.U_f.dot(pR_px.todense()))/2
+        du_dx_large = du_dx
+        # du_dx_large = np.zeros((self.num_total_dof, self.num_elements))
+        # du_dx_large[np.ix_(self.free_dof), :] = du_dx
+
+        df_dx = strain_energy_constraint_gradient
+
+        pF_px = np.zeros((self.num_total_dof, len(x)))
+        # odd_indices = np.arange(1, self.num_total_dof, 2)
+        # pF_px[odd_indices,:] = -self.mesh.material.density*self.mesh.elements[0].thickness*self.mesh.elements[0].area*self.g
+        for i, element in enumerate(self.mesh.elements):
+            element_sensitivity = -element.density0*element.volume*self.g/4 * (simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
+            element_dofs = self.nodes_to_dof_indices(element.node_map)
+            vertical_dofs = element_dofs[np.array([1, 3, 5, 7])]
+            pF_px[vertical_dofs, i] = element_sensitivity
+
+        pm_px = np.ones(len(x),)*self.mesh.material.density*self.mesh.elements[0].thickness*self.mesh.elements[0].area * simp_penalization_factor*x**(simp_penalization_factor-1)
+        pc_px = (4*0.8418*self.total_mass**3 - 3*1.644*self.total_mass**2 + 2*1.244*self.total_mass - 0.313)*pm_px
+
+        return pc_px
     
 
     
     def setup_dynamics(self):
         self.setup()
-        self.assemble_mass_matrix()
         self.M = self.M.tocsc()
         self.M_ff = self.M[np.ix_(self.free_dof, self.free_dof)]
 
@@ -745,6 +790,56 @@ class FEA:
         self.rigid_body_translation_map[1, np.ix_(odd_indices)] = 1/(self.total_mass)
 
 
+    def evaluate_topology_dynamic(self, x, simp_penalization_factor=3, ramp_penalization_factor=None, filter_radius=None):
+        self.evaluate_topology(x, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
+        self.M_ff = self.M[np.ix_(self.free_dof, self.free_dof)]
+
+        size_K_ff = self.K_ff.shape[0]
+        self.num_dislpacement_dofs = size_K_ff
+        self.num_dislpacement_states = 2*self.num_dislpacement_dofs
+        self.num_rigid_body_dofs = 3     # 2D
+        num_rigid_body_states = 2*self.num_rigid_body_dofs
+
+        # TODO Move this block out of here. Make it a problem input.
+        M_ff_inv = sps.linalg.inv(self.M_ff)
+        self.dampening_per_node = 0.03      # TODO implement Proportional damping
+        displacement_dampening = sps.eye(self.num_dislpacement_dofs, format='csc')*self.dampening_per_node
+        
+
+        self.num_states = self.num_dislpacement_states
+        num_inputs = self.num_dislpacement_dofs     # each node is a location for a potential input
+
+        # Constructing displacement portion of A matrix
+        A_10 = -M_ff_inv.dot(self.K_ff)
+        A_11 = -M_ff_inv.dot(displacement_dampening)
+        A = sps.lil_matrix((self.num_states, self.num_states))
+        A[:self.num_dislpacement_dofs, self.num_dislpacement_dofs:] = sps.eye(self.num_dislpacement_dofs, format='csc')
+        A[self.num_dislpacement_dofs:, :self.num_dislpacement_dofs] = A_10
+        A[self.num_dislpacement_dofs:, self.num_dislpacement_dofs:] = A_11
+        A = A.tocsc()
+
+        B = sps.lil_matrix((self.num_states, num_inputs))
+        B[self.num_dislpacement_dofs:,:] = M_ff_inv
+        B = B.tocsc()
+
+        C_dislacements = sps.lil_matrix((self.num_dislpacement_dofs, self.num_states))
+        C_dislacements[:, :self.num_dislpacement_dofs] = sps.eye(self.num_dislpacement_dofs)
+        C_dislacements = C_dislacements.tocsc()
+
+        self.A = A
+        self.B = B
+        self.C_dislacements = C_dislacements
+
+        # Maps from self.F*delta_t**2 to rigid body displacement. 
+        self.rigid_body_translation_map = np.zeros((2, self.num_total_dof)) # 2 is the number of rigid body translation
+        even_indices = np.arange(0, self.num_total_dof, 2)
+        odd_indices = np.arange(1, self.num_total_dof, 2)
+
+        self.total_mass = self.M[np.ix_(odd_indices, odd_indices)].sum()
+        self.moment_of_inertia_zz = 0.012495943554666666   # TODO update this.
+
+        self.rigid_body_translation_map[0, np.ix_(even_indices)] = 1/(self.total_mass)
+        self.rigid_body_translation_map[1, np.ix_(odd_indices)] = 1/(self.total_mass)
 
 
     '''
@@ -957,6 +1052,12 @@ class FEA:
         stresses_vec[:,0,:] = self.stresses_dict['xx']
         stresses_vec[:,1,:] = self.stresses_dict['yy']
         stresses_vec[:,2,:] = self.stresses_dict['xy']
+
+        # test = np.zeros((self.nt+1, self.stresses_dict['xx'].shape[1], 3))
+        # test[:,:,0] = self.stresses_dict['xx']
+        # test[:,:,1] = self.stresses_dict['yy']
+        # test[:,:,2] = self.stresses_dict['xy']
+
         von_mises_map = np.array([
             [1., -1/2, 0],
             [-1/2, 1., 0],
@@ -1018,7 +1119,8 @@ class FEA:
     Calculates the total strain energy.
     '''
     def evaluate_strain_energy(self):
-        self.strain_energy = self.U.T.dot(self.K.dot(self.U))/2
+        # self.strain_energy = self.U.T.dot(self.K.dot(self.U))/2
+        self.strain_energy = self.F.T.dot(self.U)/2
         return self.strain_energy
 
     '''

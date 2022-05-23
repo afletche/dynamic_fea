@@ -29,6 +29,7 @@ class UnstructuredMesh(Mesh):
         self.num_total_dof = self.num_nodes*self.dimensions_spanned
 
         self.point_masses = []
+        self.density_filter = None
 
         # self.initialize_ode()
 
@@ -131,8 +132,9 @@ class UnstructuredMesh(Mesh):
 
         filtered_densities = densities
         if filter_radius is not None:
-            W = self.apply_density_aggregation_filter(filter_radius)
-            filtered_densities = W.dot(filtered_densities)
+            if self.density_filter is None:
+                self.density_filter = self.apply_density_aggregation_filter(filter_radius)
+            filtered_densities = self.density_filter.dot(filtered_densities)
         else:
             self.density_filter = None
 

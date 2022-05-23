@@ -303,12 +303,12 @@ x0 = np.ones(len(elements),)*0.4
 x0 = np.linspace(0.1, 0.9, len(elements))
 model_outputs = evaluate_model_a(x=x0)
 
-# np.set_printoptions(threshold=sys.maxsizek)
-# print('FD', finite_difference(evaluate_model_a, x0, h=1.e-5))
+# # np.set_printoptions(threshold=sys.maxsize)
+# print('MODEL A FD', finite_difference(evaluate_model_a, x0, h=1.e-5))
 # # np.set_printoptions(threshold=sys.maxsize)
 # print('MODEL A ANALYTIC', evaluate_model_a(x0)[2])
 
-# print('FD', finite_difference(evaluate_model_b, x0, h=1.e-5))
+# print('MODEL B FD', finite_difference(evaluate_model_b, x0, h=1.e-5))
 # # np.set_printoptions(threshold=sys.maxsize)
 # print('MODEL B ANALYTIC', evaluate_model_b(x0)[2])
 
@@ -395,7 +395,7 @@ def evaluate_model_2a(x, rho=0.):
 
 
 
-# Run optimization
+# # Run optimization for problem 2, part a
 # hw5_optimization = OptimizationProblem()
 # steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
 # hw5_optimization.set_model(model=evaluate_model_2a)
@@ -403,109 +403,108 @@ def evaluate_model_2a(x, rho=0.):
 # hw5_optimization.setup()
 # x0 = np.ones(len(elements),)*0.4
 # steepest_descent_optimizer.set_initial_guess(x0)
-# hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-3, updating_penalty=True, max_iter=500)
+# hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-10, objective_penalty=1.e-3, updating_penalty=True, max_iter=200)
 # solution = hw5_optimization.report(history=True)
 # hw5_optimization.plot()
 
 # hw5_prob.plot_topology(solution[0])
 
 
-def evaluate_model_2b(x, rho=0.):
-    densities_too_high = x > 1
-    x[densities_too_high] = 1.
-    densities_too_low = x < 1.e-3
-    x[densities_too_low] = 1.e-3
+# def evaluate_model_2b(x, rho=0.):
+#     densities_too_high = x > 1
+#     x[densities_too_high] = 1.
+#     densities_too_low = x < 1.e-3
+#     x[densities_too_low] = 1.e-3
 
-    SIMP_parameter = None
-    RAMP_parameter = 3
+#     SIMP_parameter = None
+#     RAMP_parameter = 3
 
-    hw5_prob.evaluate_topology(x, simp_penalization_factor=None, ramp_penalization_factor=RAMP_parameter, filter_radius=0.15)
-    hw5_prob.evaluate_static()
+#     hw5_prob.evaluate_topology(x, simp_penalization_factor=None, ramp_penalization_factor=RAMP_parameter, filter_radius=0.15)
+#     hw5_prob.evaluate_static()
 
-    # Evaluate objective
-    L = np.zeros((hw5_prob.num_total_dof))
-    top_center_dof = top_center_node_index*2 + 1
-    L[top_center_dof] = 1.
-    f = -L.dot(hw5_prob.U)
+#     # Evaluate objective
+#     L = np.zeros((hw5_prob.num_total_dof))
+#     top_center_dof = top_center_node_index*2 + 1
+#     L[top_center_dof] = 1.
+#     f = -L.dot(hw5_prob.U)
 
-    # Evaluate gradient
-    adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L[0, top_center_dof] = 1.
-    L_f = L[0, np.ix_(hw5_prob.free_dof)]
-    L_f = L_f.tocsc()
-    adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
-    # adjoint_term_p = 0    # default is 0
-    adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
-    # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
+#     # Evaluate gradient
+#     adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L[0, top_center_dof] = 1.
+#     L_f = L[0, np.ix_(hw5_prob.free_dof)]
+#     L_f = L_f.tocsc()
+#     adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
+#     # adjoint_term_p = 0    # default is 0
+#     adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
+#     # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
 
-    pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
-    for i, element in enumerate(hw5_prob.mesh.elements):
-        K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
-        if SIMP_parameter is not None:
-            element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
-        elif RAMP_parameter is not None:
-            element_sensitivity = element.K0*(1 + RAMP_parameter)/((-1 + RAMP_parameter*(-1 + x[i]))**2)
-        else:
-            element_sensitivity = element.K0
-        element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
-        K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-        K = K.tocsc()
-        pR_px[:, i] = K.dot(hw5_prob.U)
+#     pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
+#     for i, element in enumerate(hw5_prob.mesh.elements):
+#         K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
+#         if SIMP_parameter is not None:
+#             element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
+#         elif RAMP_parameter is not None:
+#             element_sensitivity = element.K0*(1 + RAMP_parameter)/((-1 + RAMP_parameter*(-1 + x[i]))**2)
+#         else:
+#             element_sensitivity = element.K0
+#         element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
+#         K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+#         K = K.tocsc()
+#         pR_px[:, i] = K.dot(hw5_prob.U)
 
-    pR_px = pR_px.tocsc()
-    gradient = adjoint_term.dot(pR_px).todense()
+#     pR_px = pR_px.tocsc()
+#     gradient = adjoint_term.dot(pR_px).todense()
 
-    if hw5_prob.mesh.density_filter is not None:
-        gradient = gradient.dot(hw5_prob.mesh.density_filter)
+#     if hw5_prob.mesh.density_filter is not None:
+#         gradient = gradient.dot(hw5_prob.mesh.density_filter)
 
-    # Annoying thing to make gradient 1D (because scipy.sparse bug)
-    df_dx = np.zeros((len(x),))
-    for i in range(len(x)):
-        df_dx[i] = -gradient[0,i]
+#     # Annoying thing to make gradient 1D (because scipy.sparse bug)
+#     df_dx = np.zeros((len(x),))
+#     for i in range(len(x)):
+#         df_dx[i] = -gradient[0,i]
 
-    # set boundary densities to 0 gradient
-    df_dx[x == 1.] = 0.
-    df_dx[x == 1.e-3] = 0.
-
-
-    # Volume constraint (all elements equal volume so turning into mass constraint)
-    total_mass_possible = hw5_prob.num_elements
-    total_mass = np.sum(x)
-    volume_constraint = total_mass/total_mass_possible - 0.4
-    penalty = 1/2*rho*volume_constraint**2
-
-    dpenalty_dx = rho*volume_constraint
-
-    f = f + penalty
-    c = np.array([volume_constraint])
-    df_dx = df_dx + dpenalty_dx
-    # df_dx = None
-    dc_dx = dc_dx = np.array([])
-    d2f_dx2 = None
-    dl_dx = None
-    kkt = None
-
-    model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
-    return model_outputs
+#     # set boundary densities to 0 gradient
+#     df_dx[x == 1.] = 0.
+#     df_dx[x == 1.e-3] = 0.
 
 
-hw5_optimization = OptimizationProblem()
-steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
-hw5_optimization.set_model(model=evaluate_model_2b)
-hw5_optimization.set_optimizer(steepest_descent_optimizer)
-hw5_optimization.setup()
-x0 = np.ones(len(elements),)*0.4
-steepest_descent_optimizer.set_initial_guess(x0)
-hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-4, updating_penalty=True, max_iter=100)
-solution = hw5_optimization.report(history=True)
-hw5_optimization.plot()
+#     # Volume constraint (all elements equal volume so turning into mass constraint)
+#     total_mass_possible = hw5_prob.num_elements
+#     total_mass = np.sum(x)
+#     volume_constraint = total_mass/total_mass_possible - 0.4
+#     penalty = 1/2*rho*volume_constraint**2
 
-hw5_prob.plot_topology(solution[0])
+#     dpenalty_dx = rho*volume_constraint
+
+#     f = f + penalty
+#     c = np.array([volume_constraint])
+#     df_dx = df_dx + dpenalty_dx
+#     # df_dx = None
+#     dc_dx = dc_dx = np.array([])
+#     d2f_dx2 = None
+#     dl_dx = None
+#     kkt = None
+
+#     model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
+#     return model_outputs
 
 
-''' Problem 2 Part 3'''
-'''
+# hw5_optimization = OptimizationProblem()
+# steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
+# hw5_optimization.set_model(model=evaluate_model_2b)
+# hw5_optimization.set_optimizer(steepest_descent_optimizer)
+# hw5_optimization.setup()
+# x0 = np.ones(len(elements),)*0.4
+# steepest_descent_optimizer.set_initial_guess(x0)
+# hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-10, objective_penalty=1.e-3, updating_penalty=True, max_iter=150)
+# solution = hw5_optimization.report(history=True)
+# hw5_optimization.plot()
+
+# hw5_prob.plot_topology(solution[0])
+
+
+# ''' Problem 2 Part 3'''
 
 def evaluate_model_2c01(x, rho=0.):
     densities_too_high = x > 1
@@ -584,12 +583,12 @@ def evaluate_model_2c01(x, rho=0.):
 
 hw5_optimization = OptimizationProblem()
 steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
-hw5_optimization.set_model(model=evaluate_model_2b)
+hw5_optimization.set_model(model=evaluate_model_2c01)
 hw5_optimization.set_optimizer(steepest_descent_optimizer)
 hw5_optimization.setup()
 x0 = np.ones(len(elements),)*0.4
 steepest_descent_optimizer.set_initial_guess(x0)
-hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-4, updating_penalty=True, max_iter=100)
+hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-8, objective_penalty=1.e-3, updating_penalty=True, max_iter=100)
 solution = hw5_optimization.report(history=True)
 hw5_optimization.plot()
 
@@ -598,358 +597,357 @@ hw5_prob.plot_topology(solution[0])
 
 
 
-def evaluate_model_2c05(x, rho=0.):
-    densities_too_high = x > 1
-    x[densities_too_high] = 1.
-    densities_too_low = x < 1.e-3
-    x[densities_too_low] = 1.e-3
-
-    SIMP_parameter = 3
-    RAMP_parameter = 3
-
-    hw5_prob.evaluate_topology(x, simp_penalization_factor=SIMP_parameter, ramp_penalization_factor=None, filter_radius=0.05)
-    hw5_prob.evaluate_static()
-
-    # Evaluate objective
-    L = np.zeros((hw5_prob.num_total_dof))
-    top_center_dof = top_center_node_index*2 + 1
-    L[top_center_dof] = 1.
-    f = -L.dot(hw5_prob.U)
-
-    # Evaluate gradient
-    adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L[0, top_center_dof] = 1.
-    L_f = L[0, np.ix_(hw5_prob.free_dof)]
-    L_f = L_f.tocsc()
-    adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
-    # adjoint_term_p = 0    # default is 0
-    adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
-    # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
-
-    pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
-    for i, element in enumerate(hw5_prob.mesh.elements):
-        K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
-        element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
-        element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
-        K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-        K = K.tocsc()
-        pR_px[:, i] = K.dot(hw5_prob.U)
-
-    pR_px = pR_px.tocsc()
-    gradient = adjoint_term.dot(pR_px).todense()
-
-    if hw5_prob.mesh.density_filter is not None:
-        gradient = gradient.dot(hw5_prob.mesh.density_filter)
-
-    # Annoying thing to make gradient 1D (because scipy.sparse bug)
-    df_dx = np.zeros((len(x),))
-    for i in range(len(x)):
-        df_dx[i] = -gradient[0,i]
-
-    # set boundary densities to 0 gradient
-    df_dx[x == 1.] = 0.
-    df_dx[x == 1.e-3] = 0.
-
-
-    # Volume constraint (all elements equal volume so turning into mass constraint)
-    total_mass_possible = hw5_prob.num_elements
-    total_mass = np.sum(x)
-    volume_constraint = total_mass/total_mass_possible - 0.4
-    penalty = 1/2*rho*volume_constraint**2
-
-    dpenalty_dx = rho*volume_constraint
-
-    f = f + penalty
-    c = np.array([volume_constraint])
-    df_dx = df_dx + dpenalty_dx
-    # df_dx = None
-    dc_dx = dc_dx = np.array([])
-    d2f_dx2 = None
-    dl_dx = None
-    kkt = None
-
-    model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
-    return model_outputs
-
-
-hw5_optimization = OptimizationProblem()
-steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
-hw5_optimization.set_model(model=evaluate_model_2b)
-hw5_optimization.set_optimizer(steepest_descent_optimizer)
-hw5_optimization.setup()
-x0 = np.ones(len(elements),)*0.4
-steepest_descent_optimizer.set_initial_guess(x0)
-hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-4, updating_penalty=True, max_iter=100)
-solution = hw5_optimization.report(history=True)
-hw5_optimization.plot()
-
-hw5_prob.plot_topology(solution[0])
-
-
-def evaluate_model_2c1(x, rho=0.):
-    densities_too_high = x > 1
-    x[densities_too_high] = 1.
-    densities_too_low = x < 1.e-3
-    x[densities_too_low] = 1.e-3
-
-    SIMP_parameter = 3
-    RAMP_parameter = 3
-
-    hw5_prob.evaluate_topology(x, simp_penalization_factor=SIMP_parameter, ramp_penalization_factor=None, filter_radius=0.1)
-    hw5_prob.evaluate_static()
-
-    # Evaluate objective
-    L = np.zeros((hw5_prob.num_total_dof))
-    top_center_dof = top_center_node_index*2 + 1
-    L[top_center_dof] = 1.
-    f = -L.dot(hw5_prob.U)
-
-    # Evaluate gradient
-    adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L[0, top_center_dof] = 1.
-    L_f = L[0, np.ix_(hw5_prob.free_dof)]
-    L_f = L_f.tocsc()
-    adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
-    # adjoint_term_p = 0    # default is 0
-    adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
-    # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
-
-    pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
-    for i, element in enumerate(hw5_prob.mesh.elements):
-        K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
-        element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
-        element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
-        K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-        K = K.tocsc()
-        pR_px[:, i] = K.dot(hw5_prob.U)
-
-    pR_px = pR_px.tocsc()
-    gradient = adjoint_term.dot(pR_px).todense()
-
-    if hw5_prob.mesh.density_filter is not None:
-        gradient = gradient.dot(hw5_prob.mesh.density_filter)
-
-    # Annoying thing to make gradient 1D (because scipy.sparse bug)
-    df_dx = np.zeros((len(x),))
-    for i in range(len(x)):
-        df_dx[i] = -gradient[0,i]
-
-    # set boundary densities to 0 gradient
-    df_dx[x == 1.] = 0.
-    df_dx[x == 1.e-3] = 0.
-
-
-    # Volume constraint (all elements equal volume so turning into mass constraint)
-    total_mass_possible = hw5_prob.num_elements
-    total_mass = np.sum(x)
-    volume_constraint = total_mass/total_mass_possible - 0.4
-    penalty = 1/2*rho*volume_constraint**2
-
-    dpenalty_dx = rho*volume_constraint
-
-    f = f + penalty
-    c = np.array([volume_constraint])
-    df_dx = df_dx + dpenalty_dx
-    # df_dx = None
-    dc_dx = dc_dx = np.array([])
-    d2f_dx2 = None
-    dl_dx = None
-    kkt = None
-
-    model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
-    return model_outputs
-
-
-hw5_optimization = OptimizationProblem()
-steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
-hw5_optimization.set_model(model=evaluate_model_2b)
-hw5_optimization.set_optimizer(steepest_descent_optimizer)
-hw5_optimization.setup()
-x0 = np.ones(len(elements),)*0.4
-steepest_descent_optimizer.set_initial_guess(x0)
-hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-4, updating_penalty=True, max_iter=100)
-solution = hw5_optimization.report(history=True)
-hw5_optimization.plot()
-
-hw5_prob.plot_topology(solution[0])
-
-
-def evaluate_model_2c2(x, rho=0.):
-    densities_too_high = x > 1
-    x[densities_too_high] = 1.
-    densities_too_low = x < 1.e-3
-    x[densities_too_low] = 1.e-3
-
-    SIMP_parameter = 3
-    RAMP_parameter = 3
-
-    hw5_prob.evaluate_topology(x, simp_penalization_factor=SIMP_parameter, ramp_penalization_factor=None, filter_radius=0.2)
-    hw5_prob.evaluate_static()
-
-    # Evaluate objective
-    L = np.zeros((hw5_prob.num_total_dof))
-    top_center_dof = top_center_node_index*2 + 1
-    L[top_center_dof] = 1.
-    f = -L.dot(hw5_prob.U)
-
-    # Evaluate gradient
-    adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L[0, top_center_dof] = 1.
-    L_f = L[0, np.ix_(hw5_prob.free_dof)]
-    L_f = L_f.tocsc()
-    adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
-    # adjoint_term_p = 0    # default is 0
-    adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
-    # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
-
-    pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
-    for i, element in enumerate(hw5_prob.mesh.elements):
-        K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
-        element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
-        element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
-        K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-        K = K.tocsc()
-        pR_px[:, i] = K.dot(hw5_prob.U)
-
-    pR_px = pR_px.tocsc()
-    gradient = adjoint_term.dot(pR_px).todense()
-
-    if hw5_prob.mesh.density_filter is not None:
-        gradient = gradient.dot(hw5_prob.mesh.density_filter)
-
-    # Annoying thing to make gradient 1D (because scipy.sparse bug)
-    df_dx = np.zeros((len(x),))
-    for i in range(len(x)):
-        df_dx[i] = -gradient[0,i]
-
-    # set boundary densities to 0 gradient
-    df_dx[x == 1.] = 0.
-    df_dx[x == 1.e-3] = 0.
-
-
-    # Volume constraint (all elements equal volume so turning into mass constraint)
-    total_mass_possible = hw5_prob.num_elements
-    total_mass = np.sum(x)
-    volume_constraint = total_mass/total_mass_possible - 0.4
-    penalty = 1/2*rho*volume_constraint**2
-
-    dpenalty_dx = rho*volume_constraint
-
-    f = f + penalty
-    c = np.array([volume_constraint])
-    df_dx = df_dx + dpenalty_dx
-    # df_dx = None
-    dc_dx = dc_dx = np.array([])
-    d2f_dx2 = None
-    dl_dx = None
-    kkt = None
-
-    model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
-    return model_outputs
-
-
-hw5_optimization = OptimizationProblem()
-steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
-hw5_optimization.set_model(model=evaluate_model_2b)
-hw5_optimization.set_optimizer(steepest_descent_optimizer)
-hw5_optimization.setup()
-x0 = np.ones(len(elements),)*0.4
-steepest_descent_optimizer.set_initial_guess(x0)
-hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-4, updating_penalty=True, max_iter=100)
-solution = hw5_optimization.report(history=True)
-hw5_optimization.plot()
-
-hw5_prob.plot_topology(solution[0])
-
-
-def evaluate_model_2c5(x, rho=0.):
-    densities_too_high = x > 1
-    x[densities_too_high] = 1.
-    densities_too_low = x < 1.e-3
-    x[densities_too_low] = 1.e-3
-
-    SIMP_parameter = 3
-    RAMP_parameter = 3
-
-    hw5_prob.evaluate_topology(x, simp_penalization_factor=SIMP_parameter, ramp_penalization_factor=None, filter_radius=0.5)
-    hw5_prob.evaluate_static()
-
-    # Evaluate objective
-    L = np.zeros((hw5_prob.num_total_dof))
-    top_center_dof = top_center_node_index*2 + 1
-    L[top_center_dof] = 1.
-    f = -L.dot(hw5_prob.U)
-
-    # Evaluate gradient
-    adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L = sps.lil_matrix((1, hw5_prob.num_total_dof))
-    L[0, top_center_dof] = 1.
-    L_f = L[0, np.ix_(hw5_prob.free_dof)]
-    L_f = L_f.tocsc()
-    adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
-    # adjoint_term_p = 0    # default is 0
-    adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
-    # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
-
-    pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
-    for i, element in enumerate(hw5_prob.mesh.elements):
-        K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
-        element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
-        element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
-        K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-        K = K.tocsc()
-        pR_px[:, i] = K.dot(hw5_prob.U)
-
-    pR_px = pR_px.tocsc()
-    gradient = adjoint_term.dot(pR_px).todense()
-
-    if hw5_prob.mesh.density_filter is not None:
-        gradient = gradient.dot(hw5_prob.mesh.density_filter)
-
-    # Annoying thing to make gradient 1D (because scipy.sparse bug)
-    df_dx = np.zeros((len(x),))
-    for i in range(len(x)):
-        df_dx[i] = -gradient[0,i]
-
-    # set boundary densities to 0 gradient
-    df_dx[x == 1.] = 0.
-    df_dx[x == 1.e-3] = 0.
-
-
-    # Volume constraint (all elements equal volume so turning into mass constraint)
-    total_mass_possible = hw5_prob.num_elements
-    total_mass = np.sum(x)
-    volume_constraint = total_mass/total_mass_possible - 0.4
-    penalty = 1/2*rho*volume_constraint**2
-
-    dpenalty_dx = rho*volume_constraint
-
-    f = f + penalty
-    c = np.array([volume_constraint])
-    df_dx = df_dx + dpenalty_dx
-    # df_dx = None
-    dc_dx = dc_dx = np.array([])
-    d2f_dx2 = None
-    dl_dx = None
-    kkt = None
-
-    model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
-    return model_outputs
-
-
-hw5_optimization = OptimizationProblem()
-steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
-hw5_optimization.set_model(model=evaluate_model_2b)
-hw5_optimization.set_optimizer(steepest_descent_optimizer)
-hw5_optimization.setup()
-x0 = np.ones(len(elements),)*0.4
-steepest_descent_optimizer.set_initial_guess(x0)
-hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-4, updating_penalty=True, max_iter=100)
-solution = hw5_optimization.report(history=True)
-hw5_optimization.plot()
-
-hw5_prob.plot_topology(solution[0])
-'''
+# def evaluate_model_2c05(x, rho=0.):
+#     densities_too_high = x > 1
+#     x[densities_too_high] = 1.
+#     densities_too_low = x < 1.e-3
+#     x[densities_too_low] = 1.e-3
+
+#     SIMP_parameter = 3
+#     RAMP_parameter = 3
+
+#     hw5_prob.evaluate_topology(x, simp_penalization_factor=SIMP_parameter, ramp_penalization_factor=None, filter_radius=0.05)
+#     hw5_prob.evaluate_static()
+
+#     # Evaluate objective
+#     L = np.zeros((hw5_prob.num_total_dof))
+#     top_center_dof = top_center_node_index*2 + 1
+#     L[top_center_dof] = 1.
+#     f = -L.dot(hw5_prob.U)
+
+#     # Evaluate gradient
+#     adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L[0, top_center_dof] = 1.
+#     L_f = L[0, np.ix_(hw5_prob.free_dof)]
+#     L_f = L_f.tocsc()
+#     adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
+#     # adjoint_term_p = 0    # default is 0
+#     adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
+#     # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
+
+#     pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
+#     for i, element in enumerate(hw5_prob.mesh.elements):
+#         K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
+#         element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
+#         element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
+#         K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+#         K = K.tocsc()
+#         pR_px[:, i] = K.dot(hw5_prob.U)
+
+#     pR_px = pR_px.tocsc()
+#     gradient = adjoint_term.dot(pR_px).todense()
+
+#     if hw5_prob.mesh.density_filter is not None:
+#         gradient = gradient.dot(hw5_prob.mesh.density_filter)
+
+#     # Annoying thing to make gradient 1D (because scipy.sparse bug)
+#     df_dx = np.zeros((len(x),))
+#     for i in range(len(x)):
+#         df_dx[i] = -gradient[0,i]
+
+#     # set boundary densities to 0 gradient
+#     df_dx[x == 1.] = 0.
+#     df_dx[x == 1.e-3] = 0.
+
+
+#     # Volume constraint (all elements equal volume so turning into mass constraint)
+#     total_mass_possible = hw5_prob.num_elements
+#     total_mass = np.sum(x)
+#     volume_constraint = total_mass/total_mass_possible - 0.4
+#     penalty = 1/2*rho*volume_constraint**2
+
+#     dpenalty_dx = rho*volume_constraint
+
+#     f = f + penalty
+#     c = np.array([volume_constraint])
+#     df_dx = df_dx + dpenalty_dx
+#     # df_dx = None
+#     dc_dx = dc_dx = np.array([])
+#     d2f_dx2 = None
+#     dl_dx = None
+#     kkt = None
+
+#     model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
+#     return model_outputs
+
+
+# hw5_optimization = OptimizationProblem()
+# steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
+# hw5_optimization.set_model(model=evaluate_model_2c05)
+# hw5_optimization.set_optimizer(steepest_descent_optimizer)
+# hw5_optimization.setup()
+# x0 = np.ones(len(elements),)*0.4
+# steepest_descent_optimizer.set_initial_guess(x0)
+# hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-8, objective_penalty=1.e-3, updating_penalty=True, max_iter=100)
+# solution = hw5_optimization.report(history=True)
+# hw5_optimization.plot()
+
+# hw5_prob.plot_topology(solution[0])
+
+
+# def evaluate_model_2c1(x, rho=0.):
+#     densities_too_high = x > 1
+#     x[densities_too_high] = 1.
+#     densities_too_low = x < 1.e-3
+#     x[densities_too_low] = 1.e-3
+
+#     SIMP_parameter = 3
+#     RAMP_parameter = 3
+
+#     hw5_prob.evaluate_topology(x, simp_penalization_factor=SIMP_parameter, ramp_penalization_factor=None, filter_radius=0.1)
+#     hw5_prob.evaluate_static()
+
+#     # Evaluate objective
+#     L = np.zeros((hw5_prob.num_total_dof))
+#     top_center_dof = top_center_node_index*2 + 1
+#     L[top_center_dof] = 1.
+#     f = -L.dot(hw5_prob.U)
+
+#     # Evaluate gradient
+#     adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L[0, top_center_dof] = 1.
+#     L_f = L[0, np.ix_(hw5_prob.free_dof)]
+#     L_f = L_f.tocsc()
+#     adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
+#     # adjoint_term_p = 0    # default is 0
+#     adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
+#     # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
+
+#     pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
+#     for i, element in enumerate(hw5_prob.mesh.elements):
+#         K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
+#         element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
+#         element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
+#         K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+#         K = K.tocsc()
+#         pR_px[:, i] = K.dot(hw5_prob.U)
+
+#     pR_px = pR_px.tocsc()
+#     gradient = adjoint_term.dot(pR_px).todense()
+
+#     if hw5_prob.mesh.density_filter is not None:
+#         gradient = gradient.dot(hw5_prob.mesh.density_filter)
+
+#     # Annoying thing to make gradient 1D (because scipy.sparse bug)
+#     df_dx = np.zeros((len(x),))
+#     for i in range(len(x)):
+#         df_dx[i] = -gradient[0,i]
+
+#     # set boundary densities to 0 gradient
+#     df_dx[x == 1.] = 0.
+#     df_dx[x == 1.e-3] = 0.
+
+
+#     # Volume constraint (all elements equal volume so turning into mass constraint)
+#     total_mass_possible = hw5_prob.num_elements
+#     total_mass = np.sum(x)
+#     volume_constraint = total_mass/total_mass_possible - 0.4
+#     penalty = 1/2*rho*volume_constraint**2
+
+#     dpenalty_dx = rho*volume_constraint
+
+#     f = f + penalty
+#     c = np.array([volume_constraint])
+#     df_dx = df_dx + dpenalty_dx
+#     # df_dx = None
+#     dc_dx = dc_dx = np.array([])
+#     d2f_dx2 = None
+#     dl_dx = None
+#     kkt = None
+
+#     model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
+#     return model_outputs
+
+
+# hw5_optimization = OptimizationProblem()
+# steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
+# hw5_optimization.set_model(model=evaluate_model_2c1)
+# hw5_optimization.set_optimizer(steepest_descent_optimizer)
+# hw5_optimization.setup()
+# x0 = np.ones(len(elements),)*0.4
+# steepest_descent_optimizer.set_initial_guess(x0)
+# hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-3, updating_penalty=True, max_iter=100)
+# solution = hw5_optimization.report(history=True)
+# hw5_optimization.plot()
+
+# hw5_prob.plot_topology(solution[0])
+
+
+# def evaluate_model_2c2(x, rho=0.):
+#     densities_too_high = x > 1
+#     x[densities_too_high] = 1.
+#     densities_too_low = x < 1.e-3
+#     x[densities_too_low] = 1.e-3
+
+#     SIMP_parameter = 3
+#     RAMP_parameter = 3
+
+#     hw5_prob.evaluate_topology(x, simp_penalization_factor=SIMP_parameter, ramp_penalization_factor=None, filter_radius=0.2)
+#     hw5_prob.evaluate_static()
+
+#     # Evaluate objective
+#     L = np.zeros((hw5_prob.num_total_dof))
+#     top_center_dof = top_center_node_index*2 + 1
+#     L[top_center_dof] = 1.
+#     f = -L.dot(hw5_prob.U)
+
+#     # Evaluate gradient
+#     adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L[0, top_center_dof] = 1.
+#     L_f = L[0, np.ix_(hw5_prob.free_dof)]
+#     L_f = L_f.tocsc()
+#     adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
+#     # adjoint_term_p = 0    # default is 0
+#     adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
+#     # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
+
+#     pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
+#     for i, element in enumerate(hw5_prob.mesh.elements):
+#         K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
+#         element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
+#         element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
+#         K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+#         K = K.tocsc()
+#         pR_px[:, i] = K.dot(hw5_prob.U)
+
+#     pR_px = pR_px.tocsc()
+#     gradient = adjoint_term.dot(pR_px).todense()
+
+#     if hw5_prob.mesh.density_filter is not None:
+#         gradient = gradient.dot(hw5_prob.mesh.density_filter)
+
+#     # Annoying thing to make gradient 1D (because scipy.sparse bug)
+#     df_dx = np.zeros((len(x),))
+#     for i in range(len(x)):
+#         df_dx[i] = -gradient[0,i]
+
+#     # set boundary densities to 0 gradient
+#     df_dx[x == 1.] = 0.
+#     df_dx[x == 1.e-3] = 0.
+
+
+#     # Volume constraint (all elements equal volume so turning into mass constraint)
+#     total_mass_possible = hw5_prob.num_elements
+#     total_mass = np.sum(x)
+#     volume_constraint = total_mass/total_mass_possible - 0.4
+#     penalty = 1/2*rho*volume_constraint**2
+
+#     dpenalty_dx = rho*volume_constraint
+
+#     f = f + penalty
+#     c = np.array([volume_constraint])
+#     df_dx = df_dx + dpenalty_dx
+#     # df_dx = None
+#     dc_dx = dc_dx = np.array([])
+#     d2f_dx2 = None
+#     dl_dx = None
+#     kkt = None
+
+#     model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
+#     return model_outputs
+
+
+# hw5_optimization = OptimizationProblem()
+# steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
+# hw5_optimization.set_model(model=evaluate_model_2c2)
+# hw5_optimization.set_optimizer(steepest_descent_optimizer)
+# hw5_optimization.setup()
+# x0 = np.ones(len(elements),)*0.4
+# steepest_descent_optimizer.set_initial_guess(x0)
+# hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-4, updating_penalty=True, max_iter=100)
+# solution = hw5_optimization.report(history=True)
+# hw5_optimization.plot()
+
+# hw5_prob.plot_topology(solution[0])
+
+
+# def evaluate_model_2c5(x, rho=0.):
+#     densities_too_high = x > 1
+#     x[densities_too_high] = 1.
+#     densities_too_low = x < 1.e-3
+#     x[densities_too_low] = 1.e-3
+
+#     SIMP_parameter = 3
+#     RAMP_parameter = 3
+
+#     hw5_prob.evaluate_topology(x, simp_penalization_factor=SIMP_parameter, ramp_penalization_factor=None, filter_radius=0.5)
+#     hw5_prob.evaluate_static()
+
+#     # Evaluate objective
+#     L = np.zeros((hw5_prob.num_total_dof))
+#     top_center_dof = top_center_node_index*2 + 1
+#     L[top_center_dof] = 1.
+#     f = -L.dot(hw5_prob.U)
+
+#     # Evaluate gradient
+#     adjoint_term = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L = sps.lil_matrix((1, hw5_prob.num_total_dof))
+#     L[0, top_center_dof] = 1.
+#     L_f = L[0, np.ix_(hw5_prob.free_dof)]
+#     L_f = L_f.tocsc()
+#     adjoint_term_f_transpose = spsolve(hw5_prob.K_ff, -L_f.T)
+#     # adjoint_term_p = 0    # default is 0
+#     adjoint_term[0,np.ix_(hw5_prob.free_dof)] = adjoint_term_f_transpose.T
+#     # adjoint_term[0,np.ix_(hw5_prob.prescribed_dof)] = adjoint_term_p.T
+
+#     pR_px = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_elements))
+#     for i, element in enumerate(hw5_prob.mesh.elements):
+#         K = sps.lil_matrix((hw5_prob.num_total_dof, hw5_prob.num_total_dof))
+#         element_sensitivity = element.K0*SIMP_parameter*x[i]**(SIMP_parameter-1)
+#         element_dofs = hw5_prob.mesh.nodes_to_dof_indices(element.node_map)
+#         K[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+#         K = K.tocsc()
+#         pR_px[:, i] = K.dot(hw5_prob.U)
+
+#     pR_px = pR_px.tocsc()
+#     gradient = adjoint_term.dot(pR_px).todense()
+
+#     if hw5_prob.mesh.density_filter is not None:
+#         gradient = gradient.dot(hw5_prob.mesh.density_filter)
+
+#     # Annoying thing to make gradient 1D (because scipy.sparse bug)
+#     df_dx = np.zeros((len(x),))
+#     for i in range(len(x)):
+#         df_dx[i] = -gradient[0,i]
+
+#     # set boundary densities to 0 gradient
+#     df_dx[x == 1.] = 0.
+#     df_dx[x == 1.e-3] = 0.
+
+
+#     # Volume constraint (all elements equal volume so turning into mass constraint)
+#     total_mass_possible = hw5_prob.num_elements
+#     total_mass = np.sum(x)
+#     volume_constraint = total_mass/total_mass_possible - 0.4
+#     penalty = 1/2*rho*volume_constraint**2
+
+#     dpenalty_dx = rho*volume_constraint
+
+#     f = f + penalty
+#     c = np.array([volume_constraint])
+#     df_dx = df_dx + dpenalty_dx
+#     # df_dx = None
+#     dc_dx = dc_dx = np.array([])
+#     d2f_dx2 = None
+#     dl_dx = None
+#     kkt = None
+
+#     model_outputs = [f, c, df_dx, dc_dx, d2f_dx2, dl_dx, kkt]
+#     return model_outputs
+
+
+# hw5_optimization = OptimizationProblem()
+# steepest_descent_optimizer = GradientDescentOptimizer(alpha=1e-2)
+# hw5_optimization.set_model(model=evaluate_model_2c5)
+# hw5_optimization.set_optimizer(steepest_descent_optimizer)
+# hw5_optimization.setup()
+# x0 = np.ones(len(elements),)*0.4
+# steepest_descent_optimizer.set_initial_guess(x0)
+# hw5_optimization.run(line_search='GFD', grad_norm_abs_tol=1.e-6, delta_x_abs_tol=1e-7, objective_penalty=1.e-3, updating_penalty=True, max_iter=300)
+# solution = hw5_optimization.report(history=True)
+# hw5_optimization.plot()
+
+# hw5_prob.plot_topology(solution[0])

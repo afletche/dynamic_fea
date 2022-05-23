@@ -406,7 +406,7 @@ class QuadElement(Element):
     def evaluate_topology(self, density):
         self.density = self.density0 * density
         self.K = self.K0 * density
-        # self.stress_map = self.stress_map0 * density
+        self.stress_map = self.stress_map0 * density
 
     
 class TriangleElement(Element):
