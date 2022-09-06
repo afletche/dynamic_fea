@@ -6,13 +6,10 @@ This class is for performing 2D structural FEA problems.
 '''
 
 
-from functools import total_ordering
-from multiprocessing.dummy import connection
-from pprint import pprint
-from tkinter import Y
+import enum
 import numpy as np
-import numpy.matlib as npmatlib
 import scipy.sparse as sps
+import scipy
 from scipy.sparse.linalg import spsolve
 import matplotlib.pyplot as plt
 import time
@@ -422,9 +419,9 @@ class FEA:
         self.assemble_mass_matrix()
         self.assemble_stress_map()
 
-        self.reset_loads()
-        self.apply_loads(self.applied_loads)
-        self.apply_self_weight(self.g)
+        # self.reset_loads()
+        # self.apply_loads(self.applied_loads)
+        # self.apply_self_weight(self.g)
         self.F_f = self.F[self.free_dof]
         self.F_p = self.F[self.prescribed_dof]    # don't know yet
 
@@ -538,21 +535,39 @@ class FEA:
 
     
     def evaluate_strain_energy_constraint(self):
-        self.evaluate_strain_energy()
-
-        # print(self.strain_energy)
+        strain_energy = self.evaluate_discrete_strain_energy()
 
         odd_indices = np.arange(1, self.num_total_dof, 2)
         self.total_mass = self.M[np.ix_(odd_indices, odd_indices)].sum()
 
-        self.max_strain_energy = 0.8418*self.total_mass**4 - 1.644*self.total_mass**3 + 1.244*self.total_mass**2 - 0.313*self.total_mass + 0.02661
-        strain_energy_constraint = self.strain_energy - self.max_strain_energy
+        # self.max_strain_energy = 0.8418*self.total_mass**4 - 1.644*self.total_mass**3 + 1.244*self.total_mass**2 - 0.313*self.total_mass + 0.02661
+        self.max_strain_energy = 0.11275
+        strain_energy_constraint = np.linalg.norm(strain_energy, ord=10.) - self.max_strain_energy
         # strain_energy_constraint = self.strain_energy - 0.11275
-        strain_energy_constraint = np.max(strain_energy_constraint)
+        # strain_energy_constraint = np.max(strain_energy_constraint)
 
-        return strain_energy_constraint
+        # return strain_energy_constraint
+        L = np.zeros((self.num_free_dof,))
+        L[-1] = 1.e3
+        # L[15] = 1.e7
+        L[9] = 1.e3
+        # L[3] = 1.e7
+        # L = np.ones((self.num_free_dof))
+        displacements_across_time = L.dot(np.abs(self.U_discrete[:self.num_free_dof,-1]))
+        # displacement_norm = np.linalg.norm(displacements_across_time, ord=10.)
 
-    def evaluate_strain_energy_gradient(self, x, simp_penalization_factor=3., ramp_penalization_factor=None, filter_radius=filter_radius):
+        # print(L.dot(self.U_discrete[:self.num_free_dof,-1]))
+        # print(L.dot(self.U_discrete[:self.num_free_dof,-1]))
+        return L.dot(self.U_discrete[:self.num_free_dof,-1]) - 2.5
+        # print(self.U_discrete[:self.num_free_dof,-1])
+        # print(self.U[self.free_dof, -1])
+        # return L.dot(self.U[self.free_dof, -1]) - 1.e-8
+        # return displacement_norm - 600
+        # return displacements_across_time - 442
+        # return self.U_discrete[:self.num_free_dof,-1]
+        # return strain_energy_constraint
+
+    def evaluate_strain_energy_gradient(self, x, simp_penalization_factor=3., ramp_penalization_factor=None, filter_radius=None):
         self.evaluate_topology(x=x, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
         self.evaluate_static()
 
@@ -565,10 +580,10 @@ class FEA:
             element_sensitivity = element.K0*(simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
             element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
             pK_pRho[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-            pKf_pRho = pK_pRho[np.ix_(self.free_dof, self.free_dof)]
+            pKff_pRho = pK_pRho[np.ix_(self.free_dof, self.free_dof)]
             # pK_pRho = pK_pRho.tocsc()
-            pKf_pRho = pKf_pRho.tocsc()
-            pR_px[:, i] = pKf_pRho.dot(self.U_f)
+            pKff_pRho = pKff_pRho.tocsc()
+            pR_px[:, i] = pKff_pRho.dot(self.U_f)
 
 
         pF_px = np.zeros((self.num_total_dof, len(x)))
@@ -592,142 +607,640 @@ class FEA:
 
 
     def evaluate_dynamic_strain_energy_gradient(self, x, simp_penalization_factor=3., ramp_penalization_factor=None, filter_radius=None, loads=[], t_eval=np.array([])):
-        self.evaluate_topology_dynamic(x=x, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
-        self.evaluate_dynamics(loads, t_eval, t0=0, x0=None)
-
-        pm_px = np.ones(len(x),)*self.mesh.material.density*self.mesh.elements[0].thickness*self.mesh.elements[0].area * simp_penalization_factor*x**(simp_penalization_factor-1)
-        pc_px = (4*0.8418*self.total_mass**3 - 3*1.644*self.total_mass**2 + 2*1.244*self.total_mass - 0.313)*pm_px
-
-        pR_px = sps.lil_matrix((self.num_free_dof, self.num_elements))
-        for i, element in enumerate(self.mesh.elements):
-            pK_pRho = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
-            element_sensitivity = element.K0*(simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
-            element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
-            pK_pRho[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-            pKf_pRho = pK_pRho[np.ix_(self.free_dof, self.free_dof)]
-            # pK_pRho = pK_pRho.tocsc()
-            pKf_pRho = pKf_pRho.tocsc()
-            pR_px[:, i] = pKf_pRho.dot(self.U_f)
-
-        pF_px = np.zeros((self.num_total_dof, len(x)))
-        for i, element in enumerate(self.mesh.elements):
-            element_sensitivity = -element.density0*element.volume*self.g/4 * (simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
-            element_dofs = self.nodes_to_dof_indices(element.node_map)
-            vertical_dofs = element_dofs[np.array([1, 3, 5, 7])]
-            pF_px[vertical_dofs, i] = element_sensitivity
-        pFf_px = pF_px[np.ix_(self.free_dof), :].reshape((self.num_free_dof, len(x)))
-
-        dCompliance_dx = self.U_f.dot(-pR_px/2 + pFf_px)
-        # dCompliance_dx = np.dot(-self.U_f.T, pR_px.todense())
-        dStrainEnergy_dx = dCompliance_dx
-        dc_dx = dStrainEnergy_dx - pc_px
-        # dc_dx = dStrainEnergy_dx
-
-        if self.mesh.density_filter is not None:
-            dc_dx = dc_dx.dot(self.mesh.density_filter)
-
-        return dc_dx
-
-
-
-    # def evaluate_gradient(self, x, rho=0.):
-    #     gradient = 2*x
-
-    #     # Annoying thing to make gradient 1D
-    #     df_dx = np.zeros((len(x),))
-    #     for i in range(len(x)):
-    #         df_dx[i] = gradient[0,i]
-
-    #     # set boundary densities to 0 gradient
-    #     df_dx[x == 1.] = 0.
-    #     df_dx[x == 1.e-3] = 0.
-
-
-    #     # penalty portion
-    #     SF = 2.
-    #     sigma_yield = self.mesh.material.sigma_y/SF
-    #     avm_stress_constraint = (self.averaged_von_mises_stresses/sigma_yield - 1).reshape((-1,))
-    #     avm_stress_penalty_scaling_factors = np.ones_like(avm_stress_constraint)*1e-3
-    #     # print('von mises', np.max(self.averaged_von_mises_stresses))
-
-    #     constraint_vector = np.array([])
-    #     constraint_vector = np.append(constraint_vector, avm_stress_constraint)
-    #     penalty_scaling_factors_vector = np.array([])
-    #     penalty_scaling_factors_vector = np.append(penalty_scaling_factors_vector, avm_stress_penalty_scaling_factors)
-
-    #     active_contraints = constraint_vector[constraint_vector > 0]
-    #     active_penalty_scaling_factors = penalty_scaling_factors_vector[constraint_vector > 0]
-    #     gradient_penalty = np.zeros((len(x),))
-    #     gradient_penalty[constraint_vector > 0] = active_penalty_scaling_factors*active_contraints
-
-    #     if active_contraints.size != 0:
-    #         df_dx += gradient_penalty
-
-    #     return df_dx
-
-
-    def evaluate_analytic_test(self, x, rho=0.):
-        self.evaluate_topology(x=x)
-        self.evaluate_static()
-        
-        gradient = 2*x
-
-        # Annoying thing to make gradient 1D
-        df_dx = np.zeros((len(x),))
-        # for i in range(len(x)):
-        #     df_dx[i] = gradient[0,i]
-        df_dx = gradient
-
-        # set boundary densities to 0 gradient
-        df_dx[x == 1.] = 0.
-        df_dx[x == 1.e-3] = 0.
-
-
-        # penalty portion
-        stress_constraint = self.evaluate_stress_constraint(x)      # TODO Probably need to feed in eta, p, etc.!!!!
-        stress_constraint_gradient = self.evaluate_stress_constraint_gradient(x)
-        strain_energy_constraint = self.evaluate_strain_energy_constraint()
-        strain_energy_constraint_gradient = self.evaluate_strain_energy_gradient(x, simp_penalization_factor=4.)
+        densities = x
 
         simp_penalization_factor=3.
+        ramp_penalization_factor=None
+        filter_radius=None
+        strain_energy_aggregation_factor = 10.
 
-        # pR_px = sps.lil_matrix((self.num_total_dof, self.num_elements))
-        pR_px = sps.lil_matrix((self.num_free_dof, self.num_elements))
+        # Assuming constrant delta_t for now...
+        delta_t = t_eval[1] - t_eval[0]     # Assuming first time step is the same as the rest.
+
+        # time1 = time.time()
+        # # self.evaluate_topology_dynamic(x=densities, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
+        # time2 = time.time()
+        # print('topology setup: ', time2-time1)
+        # # self.evaluate_dynamics(loads, t_eval, t0=0, x0=None)
+        # time3 = time.time()
+        # print('continuous evaluation: ', time3-time2)
+
+        # # self.setup_discrete_dynamics(delta_t)
+
+        # time4 = time.time()
+        # print('discrete setup', time4-time3)
+
+        # u = self.evaluate_discrete_dynamics()
+        u = self.U_discrete
+        # print(self.U_discrete[self.num_free_dof-1,:])
+        u_f = u[:self.num_free_dof,:]
+        u_vel_f = u[self.num_free_dof:,:]
+        # u_f = self.U[self.free_dof,:]
+        # u_vel_f = self.U_dot[self.free_dof,:]
+        # u_f = self.U_per_time_step[:,self.free_dof].T
+        # time5 = time.time()
+        # print('discrete evaluation', time5-time4)
+
+        strain_energy = self.evaluate_discrete_strain_energy()
+        strain_energy_norm = np.linalg.norm(strain_energy, ord=strain_energy_aggregation_factor)
+
+        # print(densities)
+        # plt.plot(self.U_discrete[self.num_free_dof-1,:], 'b')
+        # plt.plot(self.U_per_time_step[:,-1], 'r')
+        # plt.show()
+        # print(self.U_discrete[self.num_free_dof-1,:])
+
+        # self.plot(show_dislpacements=True, show_connections=True, time_step=-1)
+        self.U = np.zeros((self.num_total_dof, self.nt+1))
+        self.U[self.free_dof,:] = self.U_discrete[:self.num_free_dof,:]
+        self.U_per_dim_per_time = self.U.reshape((self.num_nodes, self.num_dimensions, self.nt+1))
+        self.U_per_dim_per_time = np.moveaxis(self.U_per_dim_per_time, -1, 0)
+        # self.plot(show_dislpacements=True, show_connections=True, dof=-1)
+        self.evaluate_stresses()
+        self.plot(show_dislpacements=True, show_connections=False, stress_type='xx', video_file_name='displacement_animation_discrete.avi', video_fps=4000, show=False)
+        
+        # plt.plot(strain_energy, 'b')
+        # self.evaluate_strain_energy()
+        # plt.plot(self.strain_energy, 'r')
+        # plt.show()
+        time6 = time.time()
+
+        pKff_pRho = []
         for i, element in enumerate(self.mesh.elements):
-            pK_pRho = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
-            element_sensitivity = element.K0*(simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
+            element_sensitivity = element.K0*(simp_penalization_factor)*densities[i]**(simp_penalization_factor-1)
             element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
-            pK_pRho[np.ix_(element_dofs, element_dofs)] = element_sensitivity
-            pKf_pRho = pK_pRho[np.ix_(self.free_dof, self.free_dof)]
-            pK_pRho = pK_pRho.tocsc()
-            pKf_pRho = pKf_pRho.tocsc()
-            pR_px[:, i] = pKf_pRho.dot(self.U_f)
+            pK_pRhoi = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+            pK_pRhoi[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+            pK_pRhoi = pK_pRhoi.tocsc()
+            pKff_pRho.append(pK_pRhoi[np.ix_(self.free_dof, self.free_dof)])
 
-        # print(pR_px.todense())
-
-        # du_dx = -spsolve(self.K_ff, pR_px).todense()
-        # du_dx = -((sps.linalg.inv(self.K_ff).dot(self.F_f)).T.dot(pR_px)).todense()
-        du_dx = -(self.U_f.dot(pR_px.todense()))/2
-        du_dx_large = du_dx
-        # du_dx_large = np.zeros((self.num_total_dof, self.num_elements))
-        # du_dx_large[np.ix_(self.free_dof), :] = du_dx
-
-        df_dx = strain_energy_constraint_gradient
-
-        pF_px = np.zeros((self.num_total_dof, len(x)))
-        # odd_indices = np.arange(1, self.num_total_dof, 2)
-        # pF_px[odd_indices,:] = -self.mesh.material.density*self.mesh.elements[0].thickness*self.mesh.elements[0].area*self.g
+        pMff_pRho = []
         for i, element in enumerate(self.mesh.elements):
-            element_sensitivity = -element.density0*element.volume*self.g/4 * (simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
+            element_sensitivity = element.density0*element.volume/4 * (simp_penalization_factor)*densities[i]**(simp_penalization_factor-1)
             element_dofs = self.nodes_to_dof_indices(element.node_map)
-            vertical_dofs = element_dofs[np.array([1, 3, 5, 7])]
-            pF_px[vertical_dofs, i] = element_sensitivity
+            pM_pxi = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+            pM_pxi[element_dofs, element_dofs] = element_sensitivity
+            pM_pxi = pM_pxi.tocsc()
+            pMff_pRho.append(pM_pxi[np.ix_(self.free_dof, self.free_dof)])
+        
+        # pKff_pRho1 = np.zeros((self.num_free_dof, self.num_free_dof, self.num_elements))
+        # for i, element in enumerate(self.mesh.elements):
+        #     element_sensitivity = element.K0*(simp_penalization_factor)*densities[i]**(simp_penalization_factor-1)
+        #     element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
+        #     pK_pRhoi = np.zeros((self.num_total_dof, self.num_total_dof))
+        #     pK_pRhoi[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+        #     pKff_pRho1[:,:,i] = pK_pRhoi[np.ix_(self.free_dof, self.free_dof)]
 
-        pm_px = np.ones(len(x),)*self.mesh.material.density*self.mesh.elements[0].thickness*self.mesh.elements[0].area * simp_penalization_factor*x**(simp_penalization_factor-1)
-        pc_px = (4*0.8418*self.total_mass**3 - 3*1.644*self.total_mass**2 + 2*1.244*self.total_mass - 0.313)*pm_px
+        # for i, element in enumerate(self.mesh.elements):
+        #     print(pKff_pRho[i] - pKff_pRho1[:,:,i])
 
-        return pc_px
-    
+        # pMff_px = np.zeros((self.num_free_dof, self.num_free_dof, len(densities)))
+        # for i, element in enumerate(self.mesh.elements):
+        #     element_sensitivity = element.density0*element.volume/4 * (simp_penalization_factor)*densities[i]**(simp_penalization_factor-1)
+        #     element_dofs = self.nodes_to_dof_indices(element.node_map)
+        #     pM_pxi = np.zeros((self.num_total_dof, self.num_total_dof))
+        #     pM_pxi[element_dofs, element_dofs] = element_sensitivity
+        #     pMff_px[:,:,i] = pM_pxi[np.ix_(self.free_dof, self.free_dof)]
+
+        # for i, element in enumerate(self.mesh.elements):
+        #     print(pMff_pRho[i] - pMff_px[:,:,i])
+
+        time7 = time.time()
+        # print('assembling rank3 tensors', time7-time6)
+
+        # self.M_ff_inv1 = np.array(sps.linalg.inv(self.M_ff).todense())
+        self.M_ff_inv = sps.linalg.inv(self.M_ff)
+
+        dMff_inv_dx = []
+        for i, elements in enumerate(self.mesh.elements):
+            term1_T = self.M_ff_inv.dot(pMff_pRho[i])
+            dMff_inv_dx.append(-self.M_ff_inv.dot(term1_T.T))
+
+        # term1_T = np.dot(self.M_ff_inv1, pMff_px)
+        # term1 = np.swapaxes(term1_T, 0, 1)
+        # dMff_inv_dx1 = -self.M_ff_inv1.dot(term1)
+
+        d_M_inv_K_dx = []
+        for i, elements in enumerate(self.mesh.elements):
+            term1_T = np.dot(self.K_ff, dMff_inv_dx[i])
+            d_M_inv_K_dx.append(term1_T.T + self.M_ff_inv.dot(pKff_pRho[i]))
+
+        # K = np.array(self.K_ff.todense())
+        # term1_T = np.dot(K.T, dMff_inv_dx1)
+        # term1 = np.swapaxes(term1_T, 0, 1)
+        # d_M_inv_K_dx1 = (term1 + self.M_ff_inv1.dot(pKff_pRho1))
+
+
+        # displacement_dampening = self.displacement_dampening
+        # d_M_inv_damping_dx = []
+        # for i, element in enumerate(self.mesh.elements):
+        #     term1_T = displacement_dampening.dot(dMff_inv_dx[i])
+        #     # d_M_inv_damping_dx = -(term1 + self.M_ff_inv.dot(pdisplacement_dampening_pRho))      # Use once damping is a function of density
+        #     d_M_inv_damping_dx.append(-(term1_T.T))
+
+        # displacement_dampening1 = np.array(self.displacement_dampening.todense())
+        # term1_T = np.dot(displacement_dampening1.T, dMff_inv_dx1)
+        # term1 = np.swapaxes(term1_T, 0, 1)
+        # # d_M_inv_damping_dx = -(term1 + self.M_ff_inv.dot(pdisplacement_dampening_pRho))      # Use once damping is a function of density
+        # d_M_inv_damping_dx1 = -(term1)
+
+        time8 = time.time()
+        # print('tensor dot products for dMinvK/dRho', time8-time7)
+
+        # pRn_pRho = []
+        # for i in range(self.nt):
+        #     pRn_pRho.append(sps.lil_matrix((self.num_states, len(densities))))
+
+        # for i in np.arange(self.nt)+1:
+        pRn_pRho = np.zeros((self.nt, self.num_states, len(densities)))
+        for j, element in enumerate(self.mesh.elements):
+            # u_nm1_term = (d_M_inv_K_dx[j].dot(u_f[:, i-1])).T
+            u_nm1_term = (d_M_inv_K_dx[j].dot(u_f[:,:-1])).T
+            # u_nm1_term = (d_M_inv_K_dx[j].dot(u_f[:self.num_free_dof, i-1])).T
+            # u_dot_nm1_term = (d_M_inv_damping_dx[j].dot(u_vel_f[:, i-1])).T      # commenting out to save runtime, has minimal effect anyway.
+            # u_dot_nm1_term = (d_M_inv_damping_dx[j].dot(u_vel_f[:, :-1])).T      # commenting out to save runtime, has minimal effect anyway.
+            # u_dot_nm1_term = (d_M_inv_damping_dx[j].dot(u[:self.num_free_dof, i-1])).T
+            # f_nm1_term = np.array((self.F_over_time[i-1,self.free_dof].dot(dMff_inv_dx[j])).todense()).reshape((-1,))
+            f_nm1_term = (self.F_over_time[:-1,self.free_dof].dot(dMff_inv_dx[j]))
+            # Note: If including gravivty, F_f has to be differentiated as well. Also, this needs to be updated for when F_f is changing!!
+
+            # pRn_pRho[i-1][self.num_free_dof:, j] = delta_t * (u_nm1_term + u_dot_nm1_term - f_nm1_term)   # u_dot term commented out for runtime. Has minimal effect.
+            # pRn_pRho[i-1][self.num_free_dof:, j] = delta_t * (u_nm1_term - f_nm1_term)
+            pRn_pRho[:,self.num_free_dof:,j] = delta_t * (u_nm1_term - f_nm1_term)
+        # pRn_pRho[i-1] = pRn_pRho[i-1].tocsc()
+
+        time9 = time.time()
+        print('pRn_pRho construction', time9-time8)
+
+        # pRn_prho = np.zeros((self.nt, self.num_states, len(densities)))
+        # # d_M_inv_K_dx_T = np.swapaxes(d_M_inv_K_dx, 0, 1)    # There's a bug in this swapping term for some reason.
+        # for i in np.arange(self.nt)+1:
+        #     # u_nm1_term = np.swapaxes((u[:self.num_free_dof,i-1].T).dot(d_M_inv_K_dx_T), 0, 1)     If time is vectorized, the first two axes must be swapped
+        #     # u_dot_nm1_term = np.swapaxes((u[self.num_free_dof:,i-1].T).dot(d_M_inv_damping_dx), 0, 1)
+        #     # u_nm1_term = (u[:self.num_free_dof,i-1].T).dot(d_M_inv_K_dx_T)    # There's a bug in this swapping term for some reason.
+        #     u_nm1_term = np.tensordot(d_M_inv_K_dx1, (u[:self.num_free_dof, i-1]), axes=([1],[0]))
+        #     # u_dot_nm1_term = (u[self.num_free_dof:,i-1].T).dot(d_M_inv_damping_dx)
+        #     # u_dot_nm1_term = np.tensordot(d_M_inv_damping_dx1, u[:self.num_free_dof, i-1], axes=([1],[0]))
+        #     f_nm1_term = (np.array(self.F_over_time[i-1,self.free_dof].todense()).reshape((-1,))).dot(dMff_inv_dx1)
+        #     # Note: If including gravivty, F_f has to be differentiated as well. Also, this needs to be updated for when F_f is changing!!
+        #     # pRn_prho[i-1, self.num_free_dof:, :] = delta_t * (u_nm1_term + u_dot_nm1_term - f_nm1_term)
+        #     pRn_prho[i-1, self.num_free_dof:, :] = delta_t * (u_nm1_term - f_nm1_term)
+
+        # for i in range(self.nt):
+            # print(pRn_pRho[i] - pRn_pRho1[i,:,:])
+            # print(pRn_pRho[i] - pRn_prho[i,:,:])
+        
+        pRnp1_pun = -self.A_d
+
+        L = np.zeros((self.num_free_dof))
+        L[-1] = 1.e3
+        L[9] = 1.e3
+        # L[15] = 1.e7
+        # L[3] = 1.e7
+        # L = np.ones((self.num_free_dof,))
+
+        displacements_across_time = L.dot(u_f)
+        displacement_norm = np.linalg.norm(displacements_across_time, ord=10.)
+
+        # pf_pun = np.zeros((self.num_states, self.nt+1))
+        # for i in range(self.nt+1):
+        #     # # strain_energy[-1]
+        #     # p_strain_energy_p_un = (u[:self.num_free_dof,i].T).dot(self.K_ff)
+        #     # p_strain_energy_p_un = self.K_ff.dot((u[:self.num_free_dof,i])).T
+
+        #     # # strain_energy_norm
+        #     # p_strain_energy_p_un = self.K_ff.dot((u_f[:,i])).T
+        #     # pf_pun[:self.num_free_dof, i] = ((strain_energy[i]/strain_energy_norm)**(strain_energy_aggregation_factor-1))*(p_strain_energy_p_un)
+
+        #     # displacement_norm
+        #     p_displacements_pun = L
+        #     pf_pun[:self.num_free_dof, i] = (displacements_across_time[i]/(displacement_norm))**(strain_energy_aggregation_factor-1) * p_displacements_pun
+
+        
+        adjoint = np.zeros((self.num_states, self.nt))
+        # adjoint[:,-1] = spsolve(pRn_pun.T, -pf_pun.T) pRn_Pun is literally Identity
+        # adjoint[:,-1] = -pf_pun[:,-1]
+        adjoint[:self.num_free_dof,-1] = L
+        for i in np.arange(self.nt-1, 0, -1)-1:
+            # rhs = -pf_pun[:,i].T - pRnp1_pun.T.dot(adjoint[:,i+1])
+            rhs = -pRnp1_pun.T.dot(adjoint[:,i+1])
+            adjoint[:,i] = rhs      # pRn_pun is literally Identity
+
+        df_dx = np.zeros((len(densities),))
+        for i in range(self.nt):
+            df_dx[:] += -(pRn_pRho[i,:,:].T).dot(adjoint[:,i].T)
+
+        time10 = time.time()
+        print('adjoint construction and use', time10-time9)
+
+        return df_dx
+        # return L.dot(duN_drho[:self.num_free_dof,:])
+        # return duN_drho[:self.num_free_dof,:]
+ 
+
+
+    def evaluate_analytic_test(self, x, loads, t_eval):
+        densities = x
+        # densities = np.ones((self.num_elements,))*0.5
+        # displacements = x
+
+        simp_penalization_factor=3.
+        ramp_penalization_factor=None
+        filter_radius=None
+        strain_energy_aggregation_factor = 10.
+
+        # Assuming constrant delta_t for now...
+        delta_t = t_eval[1] - t_eval[0]     # Assuming first time step is the same as the rest.
+
+        time1 = time.time()
+        self.evaluate_topology_dynamic(x=densities, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
+        time2 = time.time()
+        print('topology setup: ', time2-time1)
+        self.evaluate_dynamics(loads, t_eval, t0=0, x0=None)
+        time3 = time.time()
+        print('evaluation: ', time3-time2)
+
+        # K_ff_original = self.K_ff.tolil()
+        # K_ff_prime = K_ff_original + 1/delta_t * self.displacement_dampening
+        # K_ff_prime = K_ff_prime.tocsc()
+
+        # C_ff_prime = self.displacement_dampening/delta_t
+
+        # pRn_pyn = sps.lil_matrix((self.num_prescribed_dof + self.num_free_dof, self.num_prescribed_dof + self.num_free_dof))
+        # pRn_pyn[:self.num_prescribed_dof, :self.num_prescribed_dof] = sps.eye(self.num_prescribed_dof, format='csc')
+        # pRn_pyn[:self.num_prescribed_dof, self.num_prescribed_dof:] = self.K_pf
+        # pRn_pyn[self.num_prescribed_dof:, self.num_prescribed_dof:] = K_ff_prime
+        # pRn_pyn = pRn_pyn.tocsc()
+
+        # pRnp1_pyn = sps.lil_matrix((self.num_prescribed_dof + self.num_free_dof, self.num_prescribed_dof + self.num_free_dof))
+        # pRnp1_pyn[self.num_prescribed_dof:, self.num_prescribed_dof:] = C_ff_prime
+        # pRnp1_pyn = pRnp1_pyn.tocsc()
+
+        # strain_energy = np.zeros((self.nt+1,))
+        # for i in range(self.nt+1):
+        #     strain_energy[i] = self.U_per_time_step[i,self.free_dof].dot((self.K_ff).dot(self.U_per_time_step[i,self.free_dof].T)/2)    # isntead of looping, can turn self.F into a diagonal matrix.
+        # strain_energy_norm = np.linalg.norm(strain_energy, ord=strain_energy_aggregation_factor)
+        # pf_pyn = sps.lil_matrix((1, self.num_prescribed_dof + self.num_free_dof))
+        # pf_pyn[0, self.num_prescribed_dof:] = (strain_energy[self.nt]/strain_energy_norm)**(strain_energy_aggregation_factor-1)*self.F_over_time[self.nt,self.free_dof]
+        # pf_pyn = pf_pyn.tocsc()
+
+        # adjoint_tensor = np.zeros((self.nt+1, self.num_prescribed_dof + self.num_free_dof))
+        # adjoint_tensor[self.nt,:] = -spsolve(pRn_pyn, pf_pyn.T)
+
+        # for i in np.arange(self.nt-1, -1, -1):
+        #     pf_pyn[0, self.num_prescribed_dof:] = (strain_energy[i]/strain_energy_norm)**(strain_energy_aggregation_factor-1)*self.F_over_time[i,self.free_dof]
+        #     rhs = -pf_pyn.T - pRnp1_pyn.T.dot(adjoint_tensor[i+1,:]).reshape((-1,1))
+        #     adjoint_tensor[i,:] = -spsolve(pRn_pyn, rhs)
+
+        # u_test = np.zeros((self.nt+1,self.num_total_dof))
+        # for i in np.arange(1,self.nt+1):
+        #     u_test[i,self.free_dof] = (sps.linalg.inv(self.K_ff + 1/delta_t * self.displacement_dampening).dot(1/delta_t * self.displacement_dampening.dot(u_test[i-1,self.free_dof].T) + np.array(self.F_f.todense()).reshape((-1,))))
+        
+
+        # df_dx = np.zeros((len(densities),))
+        # pRf_px = sps.lil_matrix((self.num_free_dof, self.num_elements))
+        # pRp_px = sps.lil_matrix((self.num_prescribed_dof, self.num_elements))
+        # for n in range(self.nt+1):
+        #     for i, element in enumerate(self.mesh.elements):
+        #         pK_pRho = sps.lil_matrix((self.num_total_dof, self.num_total_dof))
+        #         element_sensitivity = element.K0*(simp_penalization_factor)*densities[i]**(simp_penalization_factor-1)
+        #         element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
+        #         pK_pRho[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+        #         pKff_pRho = pK_pRho[np.ix_(self.free_dof, self.free_dof)]
+        #         pKpf_pRho = pK_pRho[np.ix_(self.prescribed_dof, self.free_dof)]
+        #         pKff_pRho = pKff_pRho.tocsc()
+        #         pKpf_pRho = pKpf_pRho.tocsc()
+
+        #         # pRf_px[:, i] = pKff_pRho.dot(self.U_per_time_step[n, self.free_dof])  # if C is dependent on rho, add that term here.
+        #         # pRp_px[:, i] = pKpf_pRho.dot(self.U_per_time_step[n, self.free_dof])
+        #         pRf_px[:, i] = pKff_pRho.dot(u_test[n, self.free_dof])  # if C is dependent on rho, add that term here.
+        #         pRp_px[:, i] = pKpf_pRho.dot(u_test[n, self.free_dof])
+        #     pR_px = sps.lil_matrix((self.num_prescribed_dof + self.num_free_dof, self.num_elements))
+        #     pR_px[self.free_dof,:] = pRf_px
+        #     pR_px[self.prescribed_dof,:] = pRp_px
+        #     pR_px = pR_px.tocsc()
+        #     if n == 1:
+        #         test = pR_px
+
+        #     # df_dx[:] += adjoint_tensor[n,:].dot(pR_px)  
+        #     df_dx[:] += (pR_px.T.dot(adjoint_tensor[n,:].T)).T 
+
+        # K_prime = self.K
+        # K_prime[:self.num_free_dof, :self.num_free_dof] = K_ff_prime
+
+        # u_test = np.zeros((self.nt+1,self.num_total_dof))
+        # for i in np.arange(1,self.nt+1):
+        #     u_test[i,self.free_dof] = (sps.linalg.inv(self.K_ff + 1/delta_t * self.displacement_dampening).dot(1/delta_t * self.displacement_dampening.dot(u_test[i-1,self.free_dof].T) + np.array(self.F_f.todense()).reshape((-1,))))
+        # print(u_test)
+        # print(self.U_per_time_step)
+        # print(self.U_per_time_step - u_test)
+
+        # spring_term = K_prime.dot(self.U_per_time_step[1,:].T)
+        # # spring_term = K_prime.dot(u_test[1,:].T)
+        # damping_term = np.zeros((self.num_total_dof))
+        # damping_term[self.num_prescribed_dof:] = C_ff_prime.dot(self.U_per_time_step[0,self.free_dof].T)
+        # # damping_term[self.num_prescribed_dof:] = C_ff_prime.dot(u_test[0,self.free_dof].T)
+        # force_term = np.array(self.F_over_time[1,:].todense()).reshape((-1,))
+        # R = (spring_term  - damping_term - force_term)[self.free_dof]
+        # print(R)
+
+        self.A_d = sps.lil_matrix((self.num_states, self.num_states))
+        self.A_d[:self.num_free_dof, :self.num_free_dof] = sps.eye(self.num_free_dof, format='csc')
+        self.A_d[:self.num_free_dof, self.num_free_dof:] = sps.eye(self.num_free_dof, format='csc')*delta_t
+        self.M_ff_inv = sps.linalg.inv(self.M_ff)
+        self.A_d[self.num_free_dof:, :self.num_free_dof] = -delta_t*self.M_ff_inv.dot(self.K_ff)
+        self.A_d[self.num_free_dof:, self.num_free_dof:] = sps.eye(self.num_free_dof, format='csc') - delta_t*self.M_ff_inv.dot(self.displacement_dampening)
+        self.A_d = self.A_d.tocsc()
+
+
+        self.B_d = sps.lil_matrix((self.num_states, self.num_free_dof))
+        self.B_d[self.num_free_dof:] = delta_t*self.M_ff_inv
+        self.B_d = self.B_d.tocsc()
+
+        # if self.first_time:
+        #     self.first_time = False
+        u = np.zeros((self.num_states, self.nt+1))
+        for i in range(self.nt):
+            u[:,i+1] = self.A_d.dot(u[:,i]) + np.array(self.B_d.dot(self.F_f).todense()).reshape((-1,))
+
+        self.u = u
+        # u = np.moveaxis(u, 1, 0)
+        u = self.u
+
+        # u[:,-1] = displacements
+        # print('fed',displacements)
+        # print('u', u[:,-2])
+
+        strain_energy = np.zeros((self.nt+1,))
+        for i in range(self.nt+1):
+            right_side = self.K_ff.dot(u[:self.num_free_dof,i])/2
+            strain_energy_i = (u[:self.num_free_dof,i].T).dot(right_side)
+            strain_energy[i] = strain_energy_i    # instead of looping, can turn self.F into a diagonal matrix.
+        strain_energy_norm = np.linalg.norm(strain_energy, ord=strain_energy_aggregation_factor)
+
+        # plt.plot(u[self.num_free_dof-1,:], 'b')
+        # plt.plot(self.U_per_time_step[:,-1], 'r')
+        # plt.show()
+        # # # # plt.plot(u_test[:,-1], 'g')
+        # plt.plot(strain_energy)
+        # plt.show()
+
+        pKff_pRho = np.zeros((self.num_free_dof, self.num_free_dof, self.num_elements))
+        for i, element in enumerate(self.mesh.elements):
+            element_sensitivity = element.K0*(simp_penalization_factor)*densities[i]**(simp_penalization_factor-1)
+            element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
+            pK_pRhoi = np.zeros((self.num_total_dof, self.num_total_dof))
+            pK_pRhoi[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+            pKff_pRho[:,:,i] = pK_pRhoi[np.ix_(self.free_dof, self.free_dof)]
+
+        pMff_px = np.zeros((self.num_free_dof, self.num_free_dof, len(densities)))
+        for i, element in enumerate(self.mesh.elements):
+            element_sensitivity = element.density0*element.volume/4 * (simp_penalization_factor)*densities[i]**(simp_penalization_factor-1)
+            element_dofs = self.nodes_to_dof_indices(element.node_map)
+            pM_pxi = np.zeros((self.num_total_dof, self.num_total_dof))
+            pM_pxi[element_dofs, element_dofs] = element_sensitivity
+            pMff_px[:,:,i] = pM_pxi[np.ix_(self.free_dof, self.free_dof)]
+
+        self.M_ff_inv = np.array(sps.linalg.inv(self.M_ff).todense())
+
+        term1_T = np.dot(self.M_ff_inv, pMff_px)
+        term1 = np.swapaxes(term1_T, 0, 1)
+        dMff_inv_dx = -self.M_ff_inv.dot(term1)
+
+        K = np.array(self.K_ff.todense())
+        term1_T = np.dot(K.T, dMff_inv_dx)
+        term1 = np.swapaxes(term1_T, 0, 1)
+        d_M_inv_K_dx = (term1 + self.M_ff_inv.dot(pKff_pRho))
+
+        displacement_dampening = np.array(self.displacement_dampening.todense())
+        term1_T = np.dot(displacement_dampening.T, dMff_inv_dx)
+        term1 = np.swapaxes(term1_T, 0, 1)
+        # d_M_inv_damping_dx = -(term1 + self.M_ff_inv.dot(pdisplacement_dampening_pRho))      # Use once damping is a function of density
+        d_M_inv_damping_dx = -(term1)
+
+        pRn_prho = np.zeros((self.nt, self.num_states, len(densities)))
+        # d_M_inv_K_dx_T = np.swapaxes(d_M_inv_K_dx, 0, 1)    # There's a bug in this swapping term for some reason.
+        # # print(d_M_inv_K_dx)
+        for i in np.arange(self.nt)+1:
+            # u_nm1_term = np.swapaxes((u[:self.num_free_dof,i-1].T).dot(d_M_inv_K_dx_T), 0, 1)     If time is vectorized, the first two axes must be swapped
+            # u_dot_nm1_term = np.swapaxes((u[self.num_free_dof:,i-1].T).dot(d_M_inv_damping_dx), 0, 1)
+            # u_nm1_term = (u[:self.num_free_dof,i-1].T).dot(d_M_inv_K_dx_T)    # There's a bug in this swapping term for some reason.
+            u_nm1_term = np.tensordot(d_M_inv_K_dx, (u[:self.num_free_dof, i-1]), axes=([1],[0]))
+            # u_dot_nm1_term = (u[self.num_free_dof:,i-1].T).dot(d_M_inv_damping_dx)
+            u_dot_nm1_term = np.tensordot(d_M_inv_damping_dx, u[:self.num_free_dof, i-1], axes=([1],[0]))
+            f_nm1_term = (np.array(self.F_over_time[i-1,self.free_dof].todense()).reshape((-1,))).dot(dMff_inv_dx)
+            # Note: If including gravivty, F_f has to be differentiated as well. Also, this needs to be updated for when F_f is changing!!
+            pRn_prho[i-1, self.num_free_dof:, :] = delta_t * (u_nm1_term + u_dot_nm1_term - f_nm1_term)
+        
+        R = u[:,1:] - self.A_d.dot(u[:,:-1]) - self.B_d.dot(self.F_over_time[:-1,self.free_dof].T)
+        # R = -self.A_d[self.num_free_dof:,:self.num_free_dof].dot(u[:self.num_free_dof,:-1])
+        # R = np.swapaxes(R, 0, 1)
+        # print('u', u[:self.num_free_dof,-2])
+        # R = (delta_t*self.M_ff_inv.dot(K)).dot(u[:self.num_free_dof,-2])
+        # R = (delta_t*self.M_ff_inv.dot(K)).dot(u[:self.num_free_dof,:-2])
+        # R = delta_t*(self.M_ff_inv.dot(K)).dot(u[:self.num_free_dof,:-1])
+        # test = np.tensordot(delta_t*(d_M_inv_K_dx), (u[:self.num_free_dof,:-1]), axes=([1],[0]))
+        # test = d_M_inv_K_dx_T.dot(u[:self.num_free_dof,:-2].T)
+
+        # pRn_pun = sps.eye(self.num_states, format='csc')
+        pRnp1_pun = -self.A_d
+
+        pf_pun = np.zeros((self.num_states, self.nt+1))
+        for i in range(self.nt+1):
+            p_strain_energy_p_un = (u[:self.num_free_dof,i].T).dot(K)
+            pf_pun[:self.num_free_dof, i] = ((strain_energy[i]/strain_energy_norm)**(strain_energy_aggregation_factor-1))*(p_strain_energy_p_un)
+            # pf_pun[:self.num_free_dof, i] = (p_strain_energy_p_un)
+        # last_strain_energy_obj = np.zeros((self.num_states, self.nt+1))
+        # last_strain_energy_obj[:self.num_free_dof, -1] = (u[:self.num_free_dof,-1].T).dot(K)
+
+        # pf_puN = np.zeros((self.num_states,))
+        # pStrainEnergy_pUn = (u[:self.num_free_dof,-1].T).dot(K)
+        # pf_puN[:self.num_free_dof] = ((strain_energy[-1]/strain_energy_norm)**(strain_energy_aggregation_factor-1))*(pStrainEnergy_pUn)
+
+        adjoint = np.zeros((self.num_states, self.nt))
+        # adjoint[:,-1] = spsolve(pRn_pun.T, -pf_pun.T) pRn_Pun is literally Identity
+        # adjoint[:,-1] = -pf_pun[:,-1]
+        L = np.ones((self.num_free_dof,))
+        L_long = np.zeros((self.num_states,))
+        L_long[:self.num_free_dof] = L
+        adjoint[:self.num_free_dof,-1] = -L
+        for i in np.arange(self.nt-1, 0, -1)-1:
+            # rhs = -pf_pun[:,i].T - pRnp1_pun.T.dot(adjoint[:,i+1])
+            rhs = -L_long.T - pRnp1_pun.T.dot(adjoint[:,i+1])
+            # rhs = -pRnp1_pun.T.dot(adjoint[:,i+1])
+            adjoint[:,i] = rhs      # pRn_pun is literally Identity
+
+        df_dx = np.zeros((len(densities),))
+        duN_drho = np.zeros((self.num_states, len(densities)))
+        t_step = self.nt
+        for i in range(self.nt):
+            df_dx[:] += -adjoint[:,i].dot(pRn_prho[i,:,:])
+            A_d_power = self.A_d
+            if i < t_step:
+                if t_step == (i+1):
+                    A_d_power = sps.eye(self.num_states)
+                elif t_step == (i+2):
+                    A_d_power = self.A_d
+                else:
+                    for j in range(t_step-(i+2)):
+                        A_d_power = (self.A_d).dot(A_d_power)                
+                duN_drho[:,:] += -A_d_power.dot(pRn_prho[i,:,:])
+                # duN_drho[:,:] += -pRn_prho[i,:,:]
+                # print(i)
+                # print(A_d_power.todense())
+            # print('hiii',-(pf_pun[:,-1].dot(A_d_power.todense())) - adjoint[:,i])
+            # print('hiii',-(L_long.dot(A_d_power.todense())) - adjoint[:,i])
+        
+        
+        # df_drho = -pf_pun[:,-1].dot(duN_drho)
+        # print(df_dx - df_drho)
+        # print('pf_pu',pf_pun[:,-1])
+        # print('du_drho',duN_drho)
+        # print('df_drho',df_drho)
+
+        # print('-1', adjoint[:,-1])
+        # print('-2', adjoint[:,-3])
+        # print('A.T.dot(adj)', self.A_d.T.dot(self.A_d.T).dot(adjoint[:,-1]))
+
+        # f = strain_energy[-1]
+
+        # return [R.T, pRn_prho]
+        # return [strain_energy_norm, df_dx]
+        return [L.dot(u[:self.num_free_dof,t_step]), L.dot(duN_drho[:self.num_free_dof,:])]
+        # return [L.dot(u[:self.num_free_dof,t_step]), df_dx]
+        # return [u[:,t_step], duN_drho]
+        # return [strain_energy_norm, df_dx]
+        # return[self.M_ff_inv.dot(K), d_M_inv_K_dx]
+        # return[strain_energy_norm, df_dx]
+        # return[strain_energy[-1], df_dx]
+        # return [f, pf_pun[:,-1]]
+
+
+
+    # def evaluate_analytic_test(self, x, loads, t_eval):
+    #     densities = x
+
+    #     simp_penalization_factor=3.
+    #     ramp_penalization_factor=None
+    #     filter_radius=None
+
+    #     # print('starting...')
+
+    #     time1 = time.time()
+    #     self.evaluate_topology_dynamic(x=x, simp_penalization_factor=simp_penalization_factor, ramp_penalization_factor=ramp_penalization_factor, filter_radius=filter_radius)
+    #     time2 = time.time()
+    #     print('topology setup: ', time2-time1)
+    #     self.evaluate_dynamics(loads, t_eval, t0=0, x0=None)
+    #     time3 = time.time()
+    #     print('evaluation: ', time3-time2)
+
+    #     pKff_pRho = np.zeros((self.num_free_dof, self.num_free_dof, self.num_elements))
+    #     for i, element in enumerate(self.mesh.elements):
+    #         element_sensitivity = element.K0*(simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
+    #         element_dofs = self.mesh.nodes_to_dof_indices(element.node_map)
+    #         pK_pRhoi = np.zeros((self.num_total_dof, self.num_total_dof))
+    #         pK_pRhoi[np.ix_(element_dofs, element_dofs)] = element_sensitivity
+    #         pKff_pRho[:,:,i] = pK_pRhoi[np.ix_(self.free_dof, self.free_dof)]
+
+    #     pMff_px = np.zeros((self.num_free_dof, self.num_free_dof, len(x)))
+    #     for i, element in enumerate(self.mesh.elements):
+    #         element_sensitivity = element.density0*element.volume/4 * (simp_penalization_factor)*x[i]**(simp_penalization_factor-1)
+    #         element_dofs = self.nodes_to_dof_indices(element.node_map)
+    #         pM_pxi = np.zeros((self.num_total_dof, self.num_total_dof))
+    #         pM_pxi[element_dofs, element_dofs] = element_sensitivity
+    #         pMff_px[:,:,i] = pM_pxi[np.ix_(self.free_dof, self.free_dof)]
+
+    #     self.M_ff_inv = np.array(sps.linalg.inv(self.M_ff).todense())
+    #     M_ff_vec = np.diag(self.M_ff.todense())
+    #     # self.M_ff_inv = 1/M_ff_vec
+    #     # M_ff_inv2 = self.M_ff_inv**2
+
+    #     term1_T = np.dot(self.M_ff_inv, pMff_px)
+    #     term1 = np.swapaxes(term1_T, 0, 1)
+    #     dMff_inv_dx = -self.M_ff_inv.dot(term1)
+    #     # dMff_inv_dx = -M_ff_inv2.dot(pMff_px)
+
+    #     K = np.array(self.K_ff.todense())
+    #     term1_T = np.dot(K.T, dMff_inv_dx)
+    #     term1 = np.swapaxes(term1_T, 0, 1)
+    #     d_M_inv_K_dx = -(term1 + self.M_ff_inv.dot(pKff_pRho))
+
+    #     displacement_dampening = np.array(self.displacement_dampening.todense())
+    #     term1_T = np.dot(displacement_dampening.T, dMff_inv_dx)
+    #     term1 = np.swapaxes(term1_T, 0, 1)
+    #     # d_M_inv_K_dx = -(term1 + self.M_ff_inv.dot(pdisplacement_dampening_pRho))      # Use once damping is a function of density
+    #     d_M_inv_damping_dx = -(term1)
+
+    #     A = self.A.todense()
+    #     dA_dx = np.zeros((self.num_states, self.num_states, len(x)))
+    #     dA_dx[self.num_dislpacement_dofs:, :self.num_dislpacement_dofs] = d_M_inv_K_dx
+    #     dA_dx[self.num_dislpacement_dofs:, self.num_dislpacement_dofs:] = d_M_inv_damping_dx
+
+    #     time3_1 = time.time()
+    #     print('sensitivity -- dA_dx:', time3_1 - time3)
+
+    #     B = self.B.todense()
+    #     dB_dx = np.zeros((self.num_states, self.num_free_dof, len(x)))
+    #     dB_dx[self.num_dislpacement_dofs:, :, :] = dMff_inv_dx
+
+    #     e_At = scipy.linalg.expm(A)
+    #     # de_At_dA = np.zeros((self.num_states, self.num_states, self.num_states, self.num_states))
+    #     de_At_dx = np.zeros((self.num_states, self.num_states, len(x)))
+    #     for i in range(self.num_free_dof, self.num_states):     # Starting halfway by leveraging that dA_dx has zeros on top.
+    #         print('i', i)
+    #         for j in range(self.num_states):
+    #             print('j', j)
+    #             E = np.zeros((self.num_states, self.num_states))
+    #             E[i,j] = 1.
+    #             time4 = time.time()
+    #             de_At_dAij = scipy.linalg.expm_frechet(A=A, E=E, compute_expm=False)
+    #             print('Matrix Exp Frechet Time: ', time.time() - time4)
+    #             for k in range(len(x)):
+    #                 de_At_dx[:,:,k] += de_At_dAij * dA_dx[i,j,k]
+
+    #             # de_At_dA[:,:,i,j] = scipy.linalg.expm_frechet(A=A, E=E, compute_expm=False)
+
+    #     # de_At_dx = np.tensordot(de_At_dA, dA_dx)
+
+    #     time3_2 = time.time()
+    #     print('sensitivity -- de_At_dA: ', time3_2 - time3_1)
+
+    #     d_output_d_x = de_At_dx
+
+    #     time4 = time.time()
+    #     print('sensitvity total: ', time4-time3)
+
+    #     output = scipy.linalg.expm(A)
+    #     # print(self.M_ff.todense())
+
+    #     return [output, d_output_d_x]
+        
+
+    # def evaluate_analytic_test(self, x, rho=0.):
+    #     output_size = 3
+    #     # B = np.ones((output_size, output_size, len(x)))*2
+    #     B = np.arange(output_size*output_size*len(x)).reshape((output_size, output_size, len(x)))
+    #     A = B.dot(x)
+    #     # e_At = scipy.linalg.expm(x)
+    #     e_At = scipy.linalg.expm(A)
+    #     # de_At_dA = np.zeros((e_At.shape + x.shape))
+    #     de_At_dA = np.zeros((e_At.shape + (output_size, output_size)))
+    #     # for i in range(x.shape[0]):
+    #     for i in range(output_size):
+    #         # for j in range(x.shape[1]):
+    #         for j in range(output_size):
+    #             # de_At_dA[i,j,i,j] = t*e_At[i,j]
+    #             E = np.zeros((output_size, output_size))
+    #             E[i,j] = 1.
+    #             de_At_dA[:,:,i,j] = scipy.linalg.expm_frechet(A=A, E=E, compute_expm=False)
+
+    #     de_At_dx = np.tensordot(de_At_dA, B)
+    #     # E = np.zeros_like(self.A.todense())
+    #     # E[0,0] = 1.
+    #     # print(scipy.linalg.expm_frechet(A=self.A.todense(), E=E, compute_expm=False))
+    #     # print('eAT', e_At)
+    #     # de_At_dA = t*e_At
+    #     return [e_At, de_At_dx]
 
     
     def setup_dynamics(self):
@@ -742,17 +1255,17 @@ class FEA:
         num_rigid_body_states = 2*self.num_rigid_body_dofs
 
         # TODO Move this block out of here. Make it a problem input.
-        M_ff_inv = sps.linalg.inv(self.M_ff)
+        self.M_ff_inv = sps.linalg.inv(self.M_ff)
         self.dampening_per_node = 0.03      # TODO implement Proportional damping
-        displacement_dampening = sps.eye(self.num_dislpacement_dofs, format='csc')*self.dampening_per_node
+        self.displacement_dampening = sps.eye(self.num_dislpacement_dofs, format='csc')*self.dampening_per_node
         
 
         self.num_states = self.num_dislpacement_states
         num_inputs = self.num_dislpacement_dofs     # each node is a location for a potential input
 
         # Constructing displacement portion of A matrix
-        A_10 = -M_ff_inv.dot(self.K_ff)
-        A_11 = -M_ff_inv.dot(displacement_dampening)
+        A_10 = -self.M_ff_inv.dot(self.K_ff)
+        A_11 = -self.M_ff_inv.dot(self.displacement_dampening)
         A = sps.lil_matrix((self.num_states, self.num_states))
         A[:self.num_dislpacement_dofs, self.num_dislpacement_dofs:] = sps.eye(self.num_dislpacement_dofs, format='csc')
         A[self.num_dislpacement_dofs:, :self.num_dislpacement_dofs] = A_10
@@ -767,7 +1280,7 @@ class FEA:
         # print('NORM: ', np.linalg.norm((A.dot(A_inv)).todense() - np.eye(A.shape[0])))
 
         B = sps.lil_matrix((self.num_states, num_inputs))
-        B[self.num_dislpacement_dofs:,:] = M_ff_inv
+        B[self.num_dislpacement_dofs:,:] = self.M_ff_inv
         B = B.tocsc()
 
         C_dislacements = sps.lil_matrix((self.num_dislpacement_dofs, self.num_states))
@@ -801,17 +1314,18 @@ class FEA:
         num_rigid_body_states = 2*self.num_rigid_body_dofs
 
         # TODO Move this block out of here. Make it a problem input.
-        M_ff_inv = sps.linalg.inv(self.M_ff)
-        self.dampening_per_node = 0.03      # TODO implement Proportional damping
-        displacement_dampening = sps.eye(self.num_dislpacement_dofs, format='csc')*self.dampening_per_node
+        self.M_ff_inv = sps.linalg.inv(self.M_ff)
+        # self.dampening_per_node = 0.03      # TODO implement Proportional damping
+        self.dampening_per_node = 1.      # TODO implement Proportional damping
+        self.displacement_dampening = sps.eye(self.num_dislpacement_dofs, format='csc')*self.dampening_per_node
         
 
         self.num_states = self.num_dislpacement_states
         num_inputs = self.num_dislpacement_dofs     # each node is a location for a potential input
 
         # Constructing displacement portion of A matrix
-        A_10 = -M_ff_inv.dot(self.K_ff)
-        A_11 = -M_ff_inv.dot(displacement_dampening)
+        A_10 = -self.M_ff_inv.dot(self.K_ff)
+        A_11 = -self.M_ff_inv.dot(self.displacement_dampening)
         A = sps.lil_matrix((self.num_states, self.num_states))
         A[:self.num_dislpacement_dofs, self.num_dislpacement_dofs:] = sps.eye(self.num_dislpacement_dofs, format='csc')
         A[self.num_dislpacement_dofs:, :self.num_dislpacement_dofs] = A_10
@@ -819,7 +1333,7 @@ class FEA:
         A = A.tocsc()
 
         B = sps.lil_matrix((self.num_states, num_inputs))
-        B[self.num_dislpacement_dofs:,:] = M_ff_inv
+        B[self.num_dislpacement_dofs:,:] = self.M_ff_inv
         B = B.tocsc()
 
         C_dislacements = sps.lil_matrix((self.num_dislpacement_dofs, self.num_states))
@@ -887,8 +1401,15 @@ class FEA:
         self.F = self.F.tocsc()
         self.F_f = self.F[self.free_dof]
         self.F_p = self.F[self.prescribed_dof]    # don't know yet
+        self.F_over_time = sps.lil_matrix((self.nt+1, self.num_total_dof))
+        self.F_over_time[0,:] = self.F.T.copy()
         # self.reshaped_Ff = self.F_f.reshape((-1, self.num_dimensions))
         self.reshaped_F = self.F.reshape((self.num_nodes, self.num_dimensions))
+        
+        for i in range(self.nt):
+            self.F_over_time[i+1,:] = self.F.T
+        # return
+
         evaluated_dynamics = {t0: x0} # {t: x}
         evaluated_exponentials = {} # {delta_t, e^(A*(delta_t))}
         for i, t in enumerate(t_eval):
@@ -967,6 +1488,7 @@ class FEA:
             # x_t = x_t.reshape((-1,))
             evaluated_dynamics[t] = x_t
             self.x[i+1,:] = x_t.reshape((-1,))
+            self.F_over_time[i+1,:] = self.F.T
             # self.x = np.hstack((self.x, x_t))
 
             # evaluate rigid body dynamics
@@ -992,10 +1514,13 @@ class FEA:
 
         self.U = np.zeros((self.num_total_dof, self.nt+1))
         self.U[self.free_dof,:] = self.C_dislacements.dot(self.x.T)
+        self.U_dot = np.zeros((self.num_total_dof, self.nt+1))
+        self.U_dot[self.free_dof,:] = (self.x[:,self.num_free_dof:]).T
         self.U_per_time_step = self.U.reshape((-1, self.nt+1))
         self.U_per_time_step = np.moveaxis(self.U_per_time_step, -1, 0)
         self.U_per_dim_per_time = self.U.reshape((self.num_nodes, self.num_dimensions, self.nt+1))
         self.U_per_dim_per_time = np.moveaxis(self.U_per_dim_per_time, -1, 0)
+        self.F_over_time = self.F_over_time.tocsc()
 
     
     '''
@@ -1036,6 +1561,44 @@ class FEA:
 
         return delta_rigid_body_dynamics
 
+
+    def setup_discrete_dynamics(self, delta_t):
+        # print(delta_t)
+        # delta_t = 1e-7
+        self.A_d = sps.lil_matrix((self.num_states, self.num_states))
+        self.A_d[:self.num_free_dof, :self.num_free_dof] = sps.eye(self.num_free_dof, format='csc')
+        self.A_d[:self.num_free_dof, self.num_free_dof:] = sps.eye(self.num_free_dof, format='csc')*delta_t
+        self.M_ff_inv = sps.linalg.inv(self.M_ff)
+        self.A_d[self.num_free_dof:, :self.num_free_dof] = -delta_t*self.M_ff_inv.dot(self.K_ff)
+        self.A_d[self.num_free_dof:, self.num_free_dof:] = sps.eye(self.num_free_dof, format='csc') - delta_t*self.M_ff_inv.dot(self.displacement_dampening)
+        self.A_d = self.A_d.tocsc()
+
+        # eigenvalues, eigenvectors = sps.linalg.eigs(self.A_d)
+        # print('max_eig: ', np.max(abs(eigenvalues)))
+        # print('end_scale: ', np.max(abs(eigenvalues))**(1e-5/delta_t))
+
+
+        self.B_d = sps.lil_matrix((self.num_states, self.num_free_dof))
+        self.B_d[self.num_free_dof:] = delta_t*self.M_ff_inv
+        self.B_d = self.B_d.tocsc()
+
+
+    def evaluate_discrete_dynamics(self):
+        u = np.zeros((self.num_states, self.nt+1))
+        for i in range(self.nt):
+            u[:,i+1] = self.A_d.dot(u[:,i]) + np.array(self.B_d.dot(self.F_f).todense()).reshape((-1,))
+        
+        self.U_discrete = u
+        return self.U_discrete
+
+    def evaluate_discrete_strain_energy(self):
+        strain_energy = np.zeros((self.nt+1,))
+        for i in range(self.nt+1):
+            right_side = self.K_ff.dot(self.U_discrete[:self.num_free_dof,i])/2
+            strain_energy_i = (self.U_discrete[:self.num_free_dof,i].T).dot(right_side)
+            strain_energy[i] = strain_energy_i    # instead of looping, can turn self.F into a diagonal matrix.
+
+        return strain_energy
 
     '''
     Calculates the stresses at the integration points.
@@ -1120,7 +1683,11 @@ class FEA:
     '''
     def evaluate_strain_energy(self):
         # self.strain_energy = self.U.T.dot(self.K.dot(self.U))/2
-        self.strain_energy = self.F.T.dot(self.U)/2
+        # self.strain_energy = self.F.T.dot(self.U)/2
+        self.strain_energy = 0
+        rhs = self.K_ff.dot(self.U_per_time_step[:,self.free_dof].T)
+        for i in range(self.nt):
+            self.strain_energy += self.U_per_time_step[i,self.free_dof].dot(rhs)
         return self.strain_energy
 
     '''
@@ -1228,31 +1795,32 @@ class FEA:
 
         if dof is None:
             print('Plotting...')
-            for t_step in time_step:
-                t = self.t_eval[t_step]
-                plt.figure()
-                if show_dislpacements:
-                    self.plot_displacements(show_nodes=show_nodes, show_connections=show_connections, show_undeformed=show_undeformed,
-                                             time_step=t_step, visualization_scaling_factor=visualization_scaling_factor, show=False)
-                if stress_type is not None:
-                    self.plot_stresses(stresses=stresses, stress_eval_points=stress_eval_points, time_step=t_step, show=False)
+            if show_dislpacements or stress_type is not None or video_file_name is not None:
+                for t_step in time_step:
+                    t = self.t_eval[t_step]
+                    plt.figure()
+                    if show_dislpacements:
+                        self.plot_displacements(show_nodes=show_nodes, show_connections=show_connections, show_undeformed=show_undeformed,
+                                                time_step=t_step, visualization_scaling_factor=visualization_scaling_factor, show=False)
+                    if stress_type is not None:
+                        self.plot_stresses(stresses=stresses, stress_eval_points=stress_eval_points, time_step=t_step, show=False)
 
-                if stress_type is None:
-                    # plt.title(f'Structure at t ={t: 9.5f}')
-                    plt.title(f'Structure at t ={t: 1.2e}')
-                else:
-                    plt.title(f'Stress (sigma_{stress_type}) Colorplot of Structure at t ={t:1.2e}')
-                plt.xlabel(f'x (m*{visualization_scaling_factor:3.0e})')
-                plt.ylabel(f'y (m*{visualization_scaling_factor:3.0e})')
-                plt.gca().set_aspect('equal')
-                if save_plots or video_file_name is not None:
-                    plt.savefig(f'plots/video_plot_at_t_{t:9.9f}.png', bbox_inches='tight')
-                if show:
-                    plt.show()
-                plt.close()
+                    if stress_type is None:
+                        # plt.title(f'Structure at t ={t: 9.5f}')
+                        plt.title(f'Structure at t ={t: 1.2e}')
+                    else:
+                        plt.title(f'Stress (sigma_{stress_type}) Colorplot of Structure at t ={t:1.2e}')
+                    plt.xlabel(f'x (m*{visualization_scaling_factor:3.0e})')
+                    plt.ylabel(f'y (m*{visualization_scaling_factor:3.0e})')
+                    plt.gca().set_aspect('equal')
+                    if save_plots or video_file_name is not None:
+                        plt.savefig(f'plots/video_plot_at_t_{t:9.9f}.png', bbox_inches='tight')
+                    if show:
+                        plt.show()
+                    plt.close()
 
-            if video_file_name is not None:
-                self.generate_video(video_file_name=video_file_name, video_fps=video_fps)
+                if video_file_name is not None:
+                    self.generate_video(video_file_name=video_file_name, video_fps=video_fps)
 
         elif dof is not None:
             if stress_type is not None:

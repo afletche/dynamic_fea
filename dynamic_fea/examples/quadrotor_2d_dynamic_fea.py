@@ -27,7 +27,8 @@ thickness = 0.04
 
 
 ''' Inputs '''
-NODES_PER_LENGTH = 50.
+# NODES_PER_LENGTH = 50.
+NODES_PER_LENGTH = 75.
 # NODES_PER_LENGTH = 30.
 # NODES_PER_LENGTH = 5. BAD
 
@@ -238,11 +239,11 @@ for i, t in enumerate(t_loads):
 
     dynamic_loads.append([t, dynamic_loads_per_time])
 
-# from dynamic_fea.io.import_loads import import_loads
-# dynamic_loads, t_eval = import_loads(mesh=mesh, file_path='quadrotor_input_profile.json')
+from dynamic_fea.io.import_loads import import_loads
+dynamic_loads, t_eval = import_loads(mesh=mesh, file_path='quadrotor_input_profile.json')
 # print(dynamic_loads)
 # t_eval = dynamic_loads[:][0]
-t_eval = np.linspace(0., 10., 101)
+t_eval = np.linspace(0., 10., 201)
 
 ''' Run dynamics'''
 # for i, load_case in enumerate(load_cases):
@@ -264,8 +265,8 @@ quadrotor_2d_prob.plot(stress_type='xx', time_step=-1)
 # quadrotor_2d_prob.plot(stress_type='avm', time_step=-1)
 # quadrotor_2d_prob.plot(stress_type='vm', dof=-1)
 # quadrotor_2d_prob.plot(stress_type='avm', dof=-1)
-quadrotor_2d_prob.plot(show_dislpacements=True, show_connections=False, stress_type='xx', video_file_name='displacement_animation.avi', video_fps=20, show=False)
-quadrotor_2d_prob.plot_rigid_body_displacement()
+# quadrotor_2d_prob.plot(show_dislpacements=True, show_connections=False, stress_type='xx', video_file_name='displacement_animation.avi', video_fps=20, show=False)
+# quadrotor_2d_prob.plot_rigid_body_displacement()
 # quadrotor_2d_prob.plot_rigid_body_displacement(x_axis='t', y_axis='y')
 # quadrotor_2d_prob.plot_rigid_body_displacement(x_axis='t', y_axis='x')
 # quadrotor_2d_prob.plot_rigid_body_displacement(x_axis='t', y_axis='rot_z')

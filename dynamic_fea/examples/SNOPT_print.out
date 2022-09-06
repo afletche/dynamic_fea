@@ -35,28 +35,28 @@
  Scale tolerance........     0.900       Minor feasibility tol..  1.00E-06       Iteration limit........     10000
  Scale option...........         0       Minor optimality  tol..  1.00E-06       Minor print level......         1
  Crash tolerance........     0.100       Pivot tolerance........  3.25E-11       Partial price..........         1
- Crash option...........         3       Elastic weight.........  1.00E+04       Prtl price section ( A)        40
+ Crash option...........         3       Elastic weight.........  1.00E+04       Prtl price section ( A)        80
                                          New superbasics........        99       Prtl price section (-I)         1
 
  The SQP Method
  --------------
  Minimize...............                 Cold start.............                 Proximal Point method..         1
- Nonlinear objectiv vars        40       Major optimality tol...  2.00E-06       Function precision.....  3.00E-13
- Unbounded step size....  1.00E+20       Superbasics limit......        40       Difference interval....  5.48E-07
- Unbounded objective....  1.00E+15       Reduced Hessian dim....        40       Central difference int.  6.70E-05
+ Nonlinear objectiv vars        80       Major optimality tol...  2.00E-06       Function precision.....  3.00E-13
+ Unbounded step size....  1.00E+20       Superbasics limit......        80       Difference interval....  5.48E-07
+ Unbounded objective....  1.00E+15       Reduced Hessian dim....        80       Central difference int.  6.70E-05
  Major step limit.......  2.00E+00       Derivative linesearch..                 Derivative level.......         3
  Major iterations limit.      1000       Linesearch tolerance...   0.90000       Verify level...........         0
  Minor iterations limit.       500       Penalty parameter......  0.00E+00       Major Print Level......         1
 
  Hessian Approximation
  ---------------------
- Full-Memory Hessian....                 Hessian updates........  99999999       Hessian frequency......  99999999
+ Limited-Memory Hessian.                 Hessian updates........        10       Hessian frequency......  99999999
                                                                                  Hessian flush..........  99999999
 
  Nonlinear constraints
  ---------------------
  Nonlinear constraints..         1       Major feasibility tol..  1.00E-06       Violation limit........  1.00E+06
- Nonlinear Jacobian vars        40
+ Nonlinear Jacobian vars        80
 
  Miscellaneous
  -------------
@@ -71,20 +71,40 @@
  Matrix statistics
  -----------------
                Total      Normal        Free       Fixed     Bounded
- Rows              1           1           0           0           0
- Columns          40           0           0           0          40
+ Rows              1           0           0           1           0
+ Columns          80           0           0           0          80
 
- No. of matrix elements                   40     Density     100.000
+ No. of matrix elements                   80     Density     100.000
  Biggest                          0.0000E+00  (excluding fixed columns,
  Smallest                         0.0000E+00   free rows, and RHS)
 
  No. of objective coefficients             0
 
  Nonlinear constraints       1     Linear constraints       0
- Nonlinear variables        40     Linear variables         0
- Jacobian  variables        40     Objective variables     40
- Total constraints           1     Total variables         40
+ Nonlinear variables        80     Linear variables         0
+ Jacobian  variables        80     Objective variables     80
+ Total constraints           1     Total variables         80
 1
  
 
  
+ The user has defined      80   out of      80   constraint gradients.
+ The user has defined      80   out of      80   objective  gradients.
+
+ Cheap test of user-supplied problem derivatives...
+
+ The constraint gradients seem to be OK.
+
+ -->  The largest discrepancy was    3.51E-12  in constraint    81
+ 
+
+ The objective  gradients seem to be OK.
+
+ Gradient projected in one direction   4.99805050363E-06
+ Difference approximation              4.99767882410E-06
+1
+ 
+ 
+
+   Itns Major Minors    Step   nCon Feasible  Optimal  MeritFunction     L+U BSwap     nS  condHz Penalty
+     80     0     80              1  2.8E-01  9.8E-06  2.4867404E+05       1                              _  r i

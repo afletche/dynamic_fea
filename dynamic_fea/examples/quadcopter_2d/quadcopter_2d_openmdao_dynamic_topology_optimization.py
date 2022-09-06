@@ -46,7 +46,7 @@ num_pts_00_10 = 21
 # num_pts_00_01 = 11
 # num_pts_00_01 = 8
 # num_pts_00_01 = 6
-num_pts_00_01 = 3
+num_pts_00_01 = 5
 
 
 point_00 = np.array([0., 0., 0.])
@@ -149,7 +149,7 @@ mesh.add_point_masses(battery_point_mass)
 
 ''' Boundary Conditions '''
 quadrotor_2d_prob_bc = []
-x_bounds = np.array([length/2 - 0.01, length/2 + 0.01])
+x_bounds = np.array([length/2 - 0.0001, length/2 + 0.0001])
 y_bounds = np.array([-.001, height + 0.001])
 mask_x1 = mesh.nodes[:,0] >= x_bounds[0]
 mask_x2 = mesh.nodes[:,0] <= x_bounds[1]
@@ -165,12 +165,15 @@ for node in bc_node_indices[:,0]:
     quadrotor_2d_prob_bc.append((node, 1, 0))
 
 
-input_load = np.array([[0., 30.], [0., 30.]])
-
-
 t0 = 0.
-tf = 0.01
-nt_eval = 51
+# tf = 0.005
+# tf = 4.e-3
+tf = 1.e-5
+# nt_eval = 10000
+nt_eval = 6001
+# nt_eval = 40001
+# nt_eval = 100
+# nt_eval = 100
 
 # tf = 10.
 # nt = np.rint((tf-t0)*100).astype(int) # To see displacement
@@ -183,7 +186,7 @@ nt_eval = 51
 # from dynamic_fea.io.import_loads import import_loads
 # dynamic_loads, t_eval = import_loads(mesh=mesh, file_path='quadrotor_input_profile.json')
 input_loads = [[np.array([0., 30.])],
-                [np.array([0., 30.])]]
+                [np.array([0., 50.])]]
 
 nt_loads = len(input_loads[0])
 # t_loads = [0., tf/4, tf/2, tf*3/4]
@@ -235,8 +238,9 @@ for i, t in enumerate(t_loads):
 ''' Run dynamics'''
 quadrotor_2d_prob = FEA(mesh=mesh, boundary_conditions=quadrotor_2d_prob_bc)
 quadrotor_2d_prob.setup_dynamics()
-quadrotor_2d_prob.apply_self_weight(g=9.81)
-topology_densities = np.ones((quadrotor_2d_prob.num_elements,))*0.5
+# quadrotor_2d_prob.apply_self_weight(g=9.81)
+quadrotor_2d_prob.first_time = True
+# topology_densities = np.ones((quadrotor_2d_prob.num_elements,))*0.5
 # # quadrotor_2d_prob.evaluate_topology_dynamic(x=topology_densities, simp_penalization_factor=3, ramp_penalization_factor=None, filter_radius=.1)
 # quadrotor_2d_prob.evaluate_dynamics(loads=dynamic_loads, t_eval=t_eval)
 # # U_reshaped = quadrotor_2d_prob.U_per_dim_per_time
@@ -260,7 +264,9 @@ topology_densities = np.ones((quadrotor_2d_prob.num_elements,))*0.5
 prob = om.Problem()
 
 independent_variable_component = om.IndepVarComp()
-topology_densities = np.ones((quadrotor_2d_prob.num_elements,))*0.5
+# topology_densities = np.ones((quadrotor_2d_prob.num_elements,))*0.9
+topology_densities = np.ones((quadrotor_2d_prob.num_elements,))*9.e-1
+# topology_densities = np.random.rand(quadrotor_2d_prob.num_elements)
 
 independent_variable_component.add_output('topology_densities', topology_densities)
 prob.model.add_subsystem('independent_variables', independent_variable_component, promotes=['*'])
@@ -269,9 +275,10 @@ fea_comp = EvaluateDynamicFea(fea_object=quadrotor_2d_prob, simp_penalization_fa
 prob.model.add_subsystem('fea', fea_comp, promotes=['*'])
 
 prob.model.add_objective('weight')
-prob.model.add_design_var('topology_densities', lower=1.e-4, upper=1.)
+prob.model.add_design_var('topology_densities', lower=9.e-2, upper=1.)
 # prob.model.add_constraint('stress_constraint', upper=0.)
-prob.model.add_constraint('strain_energy_constraint', upper=0.)
+# prob.model.add_constraint('strain_energy_constraint', upper=0.)
+prob.model.add_constraint('strain_energy_constraint', equals=0.)
 
 # prob.driver = om.ScipyOptimizeDriver()
 # prob.driver.options['optimizer'] = 'SLSQP'
@@ -290,13 +297,51 @@ driver.options['optimizer'] = 'SNOPT'
 
 prob.setup()
 prob.run_model()
-# prob.check_totals('U', 'topology_densities')
+quadrotor_2d_prob.U = np.zeros((quadrotor_2d_prob.num_total_dof, quadrotor_2d_prob.nt+1))
+quadrotor_2d_prob.U[quadrotor_2d_prob.free_dof,:] = quadrotor_2d_prob.U_discrete[:quadrotor_2d_prob.num_free_dof,:]
+quadrotor_2d_prob.U_per_dim_per_time = quadrotor_2d_prob.U.reshape((quadrotor_2d_prob.num_nodes, quadrotor_2d_prob.num_dimensions, quadrotor_2d_prob.nt+1))
+quadrotor_2d_prob.U_per_dim_per_time = np.moveaxis(quadrotor_2d_prob.U_per_dim_per_time, -1, 0)
+# plot_densities = np.array([1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,
+#  1.  ,1.  ,1.  ,0.4 ,0.1 ,0.62,1.  ,0.1 ,0.1 ,0.1 ,0.1 ,1.  ,0.1 ,0.1 ,
+#  0.1 ,0.1 ,1.  ,0.1 ,0.1 ,0.1 ,0.1 ,1.  ,0.1 ,0.1 ,1.  ,1.  ,1.  ,1.  ,
+#  1.  ,0.1 ,0.1 ,0.34,1.  ,0.1 ,0.1 ,0.1 ,1.  ,1.  ,1.  ,0.1 ,0.1 ,0.1 ,
+#  0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,
+#  0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,
+#  0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,0.1 ,1.  ,1.  ,1.  ,
+#  0.1 ,0.1 ,0.34,1.  ,0.1 ,0.1 ,0.1 ,1.  ,1.  ,1.  ,0.1 ,0.1 ,1.  ,0.1 ,
+#  0.1 ,1.  ,1.  ,1.  ,0.1 ,0.1 ,0.1 ,0.1 ,1.  ,0.1 ,0.1 ,0.1 ,0.1 ,1.  ,
+#  0.1 ,0.1 ,0.1 ,0.1 ,1.  ,1.  ,0.4 ,0.1 ,0.62,1.  ,1.  ,1.  ,1.  ,1.  ,
+#  1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ,1.  ])
+# plot_densities = np.array([1.,         1.,         1.,         1.,         1.,         0.09,
+#  1.,         0.09,       1.,         0.09,       0.09,       1.,
+#  1.,         0.79040001, 0.79755981, 1.,         1.,         0.09,
+#  0.09,       1.,         1.,         0.80762359, 0.8092114,  1.,
+#  1.,         0.09,       0.09,       1.,         1.,         0.09,
+#  0.09,       1.,         1.,         0.60667533, 0.59208721, 1.,
+#  1.,         0.09,       0.09,       1.,         1.,         1.,
+#  1.,         1.,         1.,         1.,         1.,         1.,
+#  1.,         0.8171343,  0.93722681, 1.,         1.,         0.09,
+#  0.09,       1.,         1.,         0.09,       0.93450011, 1.,
+#  1.,         1.,         0.09,       1.,         1.,         0.09,
+#  1.,         1.,         1.,         1.,         0.09,       1.,
+#  1.,         1.,         1.,         1.,         1.,         1.,
+#  1.,         1.        ])
+
+# quadrotor_2d_prob.plot_topology(plot_densities)
+
+# prob.check_totals('dummy_out', 'dummy_in')
+# prob.check_totals()
 # prob.check_totals('strain_energy_constraint', 'topology_densities')
 # prob.check_totals()
 prob.run_driver()
 
 print(prob['topology_densities'])
 solution_densities = prob['topology_densities']
+
+quadrotor_2d_prob.evaluate_topology_dynamic(x=solution_densities)
+quadrotor_2d_prob.setup_dynamics()
+quadrotor_2d_prob.evaluate_dynamics(dynamic_loads, t_eval)
+
 quadrotor_2d_prob.plot_topology(solution_densities)
 
 np.set_printoptions(threshold=sys.maxsize)

@@ -1,0 +1,23 @@
+
+ ==============================
+ S N O P T  7.2-5    (May 2007)
+ ==============================
+ 
+ SNMEMB EXIT 100 -- finished successfully
+ SNMEMB INFO 104 -- memory requirements estimated
+
+ ==============================
+ S N O P T  7.2-5    (May 2007)
+ ==============================
+ 
+ 
+
+ Nonlinear constraints       1     Linear constraints       0
+ Nonlinear variables        80     Linear variables         0
+ Jacobian  variables        80     Objective variables     80
+ Total constraints           1     Total variables         80
+ 
+
+ 
+ The user has defined      80   out of      80   constraint gradients.
+ The user has defined      80   out of      80   objective  gradients.

@@ -69,7 +69,7 @@ class UnstructuredMesh(Mesh):
             node = point_mass[0]
             mass = point_mass[1]
             element_dof = self.nodes_to_dof_indices([node])
-            self.M[np.ix_(element_dof, element_dof)] += np.array([mass])
+            self.M[element_dof, element_dof] += np.array([mass])
 
 
     '''
